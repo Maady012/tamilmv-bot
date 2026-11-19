@@ -490,7 +490,7 @@ def main_loop(max_duration=19800):
                         send_msg(cid, "🔍 <i>Fetching the newest torrent release on 1TamilMV...</i>")
                         try:
                             domain = get_active_domain()
-                            all_topics = scrape_discover_feed(domain, set())
+                            all_topics = scrape_discover_feed(domain, seen_posts)
                             if not all_topics:
                                 send_msg(cid, "⚠️ Could not parse feed at this moment.")
                             else:
@@ -510,10 +510,13 @@ def main_loop(max_duration=19800):
                                         pending_titles.append((clean_t, t_link))
 
                                 if not dispatched:
-                                    msg = "ℹ️ <b>Newest releases found (awaiting magnet link upload):</b>\n\n"
-                                    for pt, pl in pending_titles[:4]:
-                                        msg += f"⏳ <a href='{pl}'><b>{html.escape(pt[:70])}</b></a>\n"
-                                    send_msg(cid, msg)
+                                    if pending_titles:
+                                        msg = "ℹ️ <b>Newest releases found (awaiting magnet link upload):</b>\n\n"
+                                        for pt, pl in pending_titles[:4]:
+                                            msg += f"⏳ <a href='{pl}'><b>{html.escape(pt[:70])}</b></a>\n"
+                                        send_msg(cid, msg)
+                                    else:
+                                        send_msg(cid, "✅ <b>Up to date!</b> You have already seen all the newest torrent releases.")
                                 elif pending_titles:
                                     # If a release with magnets was sent, also show the pending titles above it
                                     pend_msg = "⏳ <b>Newer releases awaiting magnet link upload:</b>\n"
