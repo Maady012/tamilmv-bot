@@ -1,4 +1,4 @@
-name: Test Feed Parse Debug
+name: Test Feed Parse Step by Step
 on: workflow_dispatch
 jobs:
   test:
@@ -11,12 +11,32 @@ jobs:
       - run: pip install -r requirements.txt
       - run: |
           python3 -c "
-          from poll_worker import get_active_domain, scrape_discover_feed
+          from curl_cffi import requests as cffi_requests
+          from bs4 import BeautifulSoup
+          import re
+          from poll_worker import get_headers
 
-          domain = get_active_domain()
-          print('Active domain:', domain)
-          items = scrape_discover_feed(domain, set())
-          print('scrape_discover_feed returned count:', len(items))
-          for t, l, tid in items[:10]:
-              print(f'TID {tid}: {t[:50]} | {l[:60]}')
+          domain = 'https://www.1tamilmv.ceo'
+          discover_url = f'{domain}/index.php?/discover/'
+          r = cffi_requests.get(discover_url, impersonate='chrome120', timeout=15, headers=get_headers())
+          print('Status:', r.status_code)
+          soup = BeautifulSoup(r.text, 'html.parser')
+          stream = soup.find('ol', class_='ipsStream') or soup
+          print('ipsStream found:', bool(stream))
+          items = stream.find_all('li', class_='ipsStreamItem')
+          print('li count:', len(items))
+          for i, li in enumerate(items[:10]):
+              title_el = li.find('h2', class_='ipsStreamItem_title') or li.find('a', href=re.compile(r'/topic/'))
+              if not title_el:
+                  print(f'Item {i}: no title_el')
+                  continue
+              a_tag = title_el.find('a') if title_el.name != 'a' else title_el
+              if not a_tag:
+                  print(f'Item {i}: no a_tag')
+                  continue
+              href = a_tag.get('href', '').strip()
+              has_comment = 'do=findComment' in href or 'comment=' in href
+              m = re.search(r'/topic/(\d+)-', href)
+              tid = m.group(1) if m else None
+              print(f'Item {i}: tid={tid}, comment={has_comment}, href={href[:50]}')
           "
