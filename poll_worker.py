@@ -372,7 +372,7 @@ def scrape_discover_feed(domain, seen_posts):
                     continue
                 tid_int = int(m.group(1))
                 # Strictly filter out comment bumps on old movies: only modern topics (>= 200000)
-                if tid_int < 200000:
+                if tid_int < 10000:
                     continue
                 tid = str(tid_int)
                 if tid in seen_posts:
@@ -403,7 +403,7 @@ def main_loop(max_duration=19800):
     seen_posts = load_seen_posts()
     domain = get_active_domain()
     offset = 0
-    last_scrape = time.time()
+    last_scrape = time.time() - scrape_interval + 5
     scrape_interval = random.randint(300, 420)
 
     log_event("START", f"Production worker initialized on {domain}. Tracked: {len(seen_posts)}")
