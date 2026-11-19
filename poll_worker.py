@@ -38,7 +38,7 @@ LAST_DOMAIN_CHECK = 0
 def get_active_domain():
     global CACHED_DOMAIN, LAST_DOMAIN_CHECK
     now = time.time()
-    if CACHED_DOMAIN and (now - LAST_DOMAIN_CHECK < 1800):  # Cache domain for 30m
+    if CACHED_DOMAIN and (now - LAST_DOMAIN_CHECK < 1800):
         return CACHED_DOMAIN
 
     for base_url in CANDIDATE_DOMAINS:
@@ -57,20 +57,34 @@ def load_seen_posts():
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, "r") as f:
-                return set(str(x) for x in json.load(f))
+                data = json.load(f)
+                # Filter out old faulty URL strings
+                return set(str(x) for x in data if str(x).isdigit())
         except Exception:
             return set()
     return set()
 
 def save_seen_posts(seen_set):
-    trimmed = list(str(x) for x in seen_set)[-800:]
+    trimmed = list(str(x) for x in seen_set if str(x).isdigit())[-800:]
     with open(STATE_FILE, "w") as f:
         json.dump(trimmed, f, indent=2)
 
+def clean_topic_url(raw_url, domain):
+    """Accurately normalizes 1TamilMV topic URL."""
+    if raw_url.startswith("/"):
+        raw_url = f"{domain}{raw_url}"
+    # Strip URL fragments and anchor tags like #comment
+    raw_url = raw_url.split("#")[0]
+    return raw_url
+
 def extract_title_from_slug(url):
-    match = re.search(r"/topic/\d+-([^/?#]+)", url)
+    match = re.search(r"/topic/\d+-([^/?#&]+)", url)
     if match:
-        return urllib.parse.unquote(match.group(1)).replace("-", " ").strip()
+        raw = match.group(1)
+        decoded = urllib.parse.unquote(raw)
+        clean = decoded.replace("-", " ").strip()
+        if clean:
+            return clean
     return ""
 
 def extract_post_details(topic_url, fallback_title=""):
@@ -82,20 +96,29 @@ def extract_post_details(topic_url, fallback_title=""):
         
         # 1. Clean Title
         title = ""
+        # Find in <title>
         title_tag = soup.find("title")
         if title_tag:
             t = title_tag.get_text(strip=True)
             t = re.sub(r"\s*-\s*1TamilMV.*$", "", t, flags=re.IGNORECASE)
             t = re.sub(r"\s*-\s*Page\s*\d+.*$", "", t, flags=re.IGNORECASE)
-            title = t
+            if len(t) > 5 and not t.startswith("["):
+                title = t
 
+        # Find in h1
+        if not title:
+            h1 = soup.find("h1")
+            if h1:
+                title = h1.get_text(strip=True)
+
+        # Fallback to URL slug
+        slug_t = extract_title_from_slug(topic_url)
         if not title or title.startswith("[") or len(title) < 5:
-            slug_t = extract_title_from_slug(topic_url)
             if slug_t:
                 title = f"{slug_t} {title}".strip()
 
         if not title:
-            title = fallback_title or "1TamilMV Release"
+            title = fallback_title or slug_t or "1TamilMV Release"
 
         # 2. Content
         post_content = soup.find("div", {"data-role": "commentContent"}) or soup.find("div", class_="cPost_contentWrap")
@@ -176,43 +199,60 @@ def send_msg(chat_id, text):
     except Exception:
         pass
 
-def scrape_topics(domain, seen_posts):
+def scrape_discover_feed(domain, seen_posts):
+    """Specifically targets /index.php?/discover/ for new release stream items."""
     new_items = []
-    targets = [f"{domain}/", f"{domain}/index.php?/discover/"]
-    for u in targets:
-        try:
-            r = cffi_requests.get(u, impersonate="chrome120", timeout=12, headers=HEADERS)
-            if r.status_code != 200:
-                continue
+    discover_url = f"{domain}/index.php?/discover/"
+    try:
+        r = cffi_requests.get(discover_url, impersonate="chrome120", timeout=15, headers=HEADERS)
+        if r.status_code == 200:
             soup = BeautifulSoup(r.text, "html.parser")
-            for a in soup.find_all("a", href=True):
-                href = a["href"]
-                if "/topic/" in href:
-                    m = re.search(r"/topic/(\d+)-", href)
-                    if m:
-                        tid = str(m.group(1))
-                        clean_u = href.split("?")[0].rstrip("/")
-                        if tid not in seen_posts and tid not in [x[2] for x in new_items]:
-                            raw_t = a.get_text(strip=True)
-                            slug_t = extract_title_from_slug(clean_u)
-                            t = slug_t if (slug_t and len(slug_t) > len(raw_t)) else raw_t
-                            new_items.append((t or "New Release", clean_u, tid))
-        except Exception:
-            continue
+            
+            # Find stream items on discover feed
+            stream_items = soup.find_all(["li", "div"], class_=lambda c: c and ("ipsStreamItem" in c or "cStreamItem" in c))
+            if not stream_items:
+                stream_items = soup.find_all("article")
+
+            # Fallback if specific stream class not found: scan all topic links
+            candidate_links = []
+            if stream_items:
+                for item in stream_items:
+                    a = item.find("a", href=lambda h: h and "/topic/" in h)
+                    if a:
+                        candidate_links.append(a)
+            else:
+                candidate_links = soup.find_all("a", href=lambda h: h and "/topic/" in h)
+
+            for a in candidate_links:
+                href = a.get("href", "")
+                m = re.search(r"/topic/(\d+)-", href)
+                if m:
+                    tid = str(m.group(1))
+                    if tid not in seen_posts and tid not in [x[2] for x in new_items]:
+                        full_url = clean_topic_url(href, domain)
+                        raw_title = a.get_text(strip=True)
+                        slug_title = extract_title_from_slug(full_url)
+                        title = slug_title if (slug_title and len(slug_title) > len(raw_title)) else raw_title
+                        if not title or len(title) < 4:
+                            title = slug_title or "1TamilMV Release"
+                        new_items.append((title, full_url, tid))
+    except Exception as e:
+        logging.warning(f"Error scraping discover feed: {e}")
+
     return new_items
 
-def main_loop(max_duration=19800):  # 5.5 hours per runner
+def main_loop(max_duration=19800):  # 5.5 hour cycle per runner
     start_time = time.time()
     seen_posts = load_seen_posts()
     domain = get_active_domain()
     offset = 0
     last_scrape = 0
-    scrape_interval = 300  # Auto-scrape every 5 minutes
+    scrape_interval = 300
 
-    logging.info(f"Loop worker started. Active domain: {domain}, Tracked: {len(seen_posts)}")
+    logging.info(f"Live worker started on {domain}. Already tracking {len(seen_posts)} topics.")
 
     while time.time() - start_time < max_duration:
-        # 1. Immediate command listening (1-second long-poll)
+        # 1. Real-time command polling
         try:
             upd_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?timeout=2"
             if offset:
@@ -232,11 +272,11 @@ def main_loop(max_duration=19800):  # 5.5 hours per runner
 
                     cmd = text.split()[0].lower()
                     if cmd in ["/check", "/scan"]:
-                        send_msg(cid, "🔍 <i>Checking 1TamilMV now for new releases...</i>")
+                        send_msg(cid, "🔍 <i>Checking 1TamilMV discover feed for new releases...</i>")
                         domain = get_active_domain()
-                        items = scrape_topics(domain, seen_posts)
+                        items = scrape_discover_feed(domain, seen_posts)
                         if not items:
-                            send_msg(cid, "✅ <b>Up to date!</b> No new releases found.")
+                            send_msg(cid, "✅ <b>Up to date!</b> No new releases found since last scan.")
                         else:
                             send_msg(cid, f"🎉 Found <b>{len(items)}</b> new release(s)!")
                             for t, l, tid in reversed(items[:10]):
@@ -247,64 +287,62 @@ def main_loop(max_duration=19800):  # 5.5 hours per runner
 
                     elif cmd == "/status":
                         send_msg(cid, (
-                            f"⚡ <b>1TamilMV Instant Bot Live!</b>\n\n"
+                            f"⚡ <b>1TamilMV Live Notifier</b>\n\n"
                             f"🌐 <b>Active Mirror:</b> {domain}\n"
-                            f"📁 <b>Tracked:</b> {len(seen_posts)} posts saved\n"
-                            f"⚡ <b>Command Latency:</b> Instant (< 1s)\n"
+                            f"🎯 <b>Target Feed:</b> /discover/ stream\n"
+                            f"📁 <b>Tracked:</b> {len(seen_posts)} releases saved\n"
+                            f"⚡ <b>Response Time:</b> Instant (< 1s)\n"
                             f"🔄 <b>Auto-Scan:</b> Continuous every 5 mins"
                         ))
 
                     elif cmd == "/ping":
-                        send_msg(cid, "🏓 <b>Pong!</b> Responding in real-time.")
+                        send_msg(cid, "🏓 <b>Pong!</b> Active and responsive.")
 
                     elif cmd == "/latest":
-                        send_msg(cid, "🔍 <i>Fetching latest release...</i>")
+                        send_msg(cid, "🔍 <i>Fetching latest discover post...</i>")
                         try:
                             domain = get_active_domain()
-                            r = cffi_requests.get(f"{domain}/", impersonate="chrome120", timeout=12, headers=HEADERS)
-                            soup = BeautifulSoup(r.text, "html.parser")
-                            for a in soup.find_all("a", href=True):
-                                if "/topic/" in a["href"] and re.search(r"/topic/(\d+)-", a["href"]):
-                                    cu = a["href"].split("?")[0].rstrip("/")
-                                    dt = extract_post_details(cu, fallback_title=a.get_text(strip=True))
-                                    send_alert(cid, a.get_text(strip=True), cu, dt)
-                                    break
+                            items = scrape_discover_feed(domain, set())  # Empty set to get latest
+                            if items:
+                                t, l, tid = items[0]
+                                dt = extract_post_details(l, fallback_title=t)
+                                send_alert(cid, t, l, dt)
+                            else:
+                                send_msg(cid, "⚠️ Could not parse latest topic.")
                         except Exception as e:
                             send_msg(cid, f"⚠️ Error: {e}")
 
                     elif cmd in ["/start", "/help"]:
                         send_msg(cid, (
-                            "🤖 <b>1TamilMV Instant Bot Menu:</b>\n\n"
-                            "👉 /check - Scan right now for new releases\n"
+                            "🤖 <b>1TamilMV Live Notifier Menu:</b>\n\n"
+                            "👉 /check - Scan discover feed now for new releases\n"
                             "👉 /latest - Preview the most recently posted release\n"
                             "👉 /status - Show active mirror & stats\n"
-                            "👉 /ping - Test instant latency\n"
+                            "👉 /ping - Test response speed\n"
                             "👉 /help - Show this menu"
                         ))
         except Exception:
             pass
 
-        # 2. Automated background scrape check every 5 minutes
+        # 2. Automated background check every 5 minutes
         if time.time() - last_scrape > scrape_interval:
             last_scrape = time.time()
             try:
                 domain = get_active_domain()
-                new_items = scrape_topics(domain, seen_posts)
+                new_items = scrape_discover_feed(domain, seen_posts)
                 if new_items:
-                    logging.info(f"Auto-scrape found {len(new_items)} new items")
+                    logging.info(f"Discover feed found {len(new_items)} new releases")
                     for t, l, tid in reversed(new_items[:10]):
                         details = extract_post_details(l, fallback_title=t)
                         send_alert(ALLOWED_CHAT_ID, t, l, details)
                         seen_posts.add(tid)
                     save_seen_posts(seen_posts)
             except Exception as e:
-                logging.warning(f"Auto-scrape error: {e}")
+                logging.warning(f"Auto-scan error: {e}")
 
         time.sleep(1)
 
-    # Save state before runner cycle ends
     save_seen_posts(seen_posts)
-    logging.info("Cycle completed cleanly.")
 
 if __name__ == "__main__":
     main_loop()
