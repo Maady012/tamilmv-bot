@@ -495,7 +495,8 @@ def main_loop(max_duration=19800):
                                 send_msg(cid, "⚠️ Could not parse feed at this moment.")
                             else:
                                 dispatched = False
-                                for t_title, t_link, t_tid in all_topics[:6]:
+                                pending_titles = []
+                                for t_title, t_link, t_tid in all_topics[:8]:
                                     dt = extract_post_details(t_link, fallback_title=t_title)
                                     if dt and dt.get("magnets"):
                                         send_alert(cid, t_title, t_link, dt)
@@ -504,8 +505,21 @@ def main_loop(max_duration=19800):
                                         log_event("LATEST", f"Dispatched release {t_tid}: {t_title[:50]}")
                                         dispatched = True
                                         break
+                                    else:
+                                        clean_t = (dt.get("title") if dt and dt.get("title") else t_title).strip()
+                                        pending_titles.append((clean_t, t_link))
+
                                 if not dispatched:
-                                    send_msg(cid, "ℹ️ Checked newest releases, but uploaders have not added magnet links yet.")
+                                    msg = "ℹ️ <b>Newest releases found (awaiting magnet link upload):</b>\n\n"
+                                    for pt, pl in pending_titles[:4]:
+                                        msg += f"⏳ <a href='{pl}'><b>{html.escape(pt[:70])}</b></a>\n"
+                                    send_msg(cid, msg)
+                                elif pending_titles:
+                                    # If a release with magnets was sent, also show the pending titles above it
+                                    pend_msg = "⏳ <b>Newer releases awaiting magnet link upload:</b>\n"
+                                    for pt, pl in pending_titles[:3]:
+                                        pend_msg += f"• <a href='{pl}'>{html.escape(pt[:65])}</a>\n"
+                                    send_msg(cid, pend_msg)
                         except Exception as e:
                             send_msg(cid, f"⚠️ Error: {e}")
 
