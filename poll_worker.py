@@ -204,20 +204,20 @@ def extract_post_details(topic_url, fallback_title=""):
                     if not any(skip in line.lower() for skip in ["telegram channel", "click here", "audio credits", "official channel"]):
                         desc_lines.append(line)
 
-        # Check if this topic has external DDL (Direct Download Links) like Mega, MediaFire, GDrive, Terabox, etc.
-        ddl_domains = [
-            "drive.google", "mega.nz", "mediafire", "1fichier", "gdtot", "hubdrive",
-            "katdrive", "kolop", "filepress", "streamtape", "doodstream", "terabox",
-            "pixeldrain", "droplink", "fastforward", "rapidgator", "nitroflare",
-            "turbobit", "uptobox", "app.box.com", "dropbox.com", "send.cm"
-        ]
+        # If NO magnets are present, check if the post contains external download links (DDL, shorteners, hosters like byseraguci, etc.)
+        # Any post that has external http links instead of magnet: is a DDL post and will never receive magnets.
         has_ddl = False
-        if post_content:
+        if post_content and not magnets:
             for a in post_content.find_all("a", href=True):
-                h = a["href"].lower()
-                if any(d in h for d in ddl_domains):
-                    has_ddl = True
-                    break
+                h = a["href"].strip().lower()
+                # Skip internal forum navigation, emoticons, profile links
+                if not h.startswith("http"):
+                    continue
+                if any(internal in h for internal in ["1tamilmv", "tamilmv", "t.me", "telegram.org", "whatsapp.com"]):
+                    continue
+                # Any other external link in a post with zero magnets indicates an external DDL hoster
+                has_ddl = True
+                break
 
         return {
             "title": title,
