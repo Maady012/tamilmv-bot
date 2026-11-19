@@ -149,7 +149,7 @@ def extract_post_details(topic_url, fallback_title=""):
             
         soup = BeautifulSoup(res.text, "html.parser")
         
-        # 1. Clean Title
+        # 1. Title Extraction
         title = ""
         title_tag = soup.find("title")
         if title_tag:
@@ -282,46 +282,42 @@ def send_msg(chat_id, text):
         pass
 
 def scrape_discover_feed(domain, seen_posts):
-    new_items = []
+    """
+    Scrapes releases and orders by HIGHEST numeric Topic ID.
+    Higher Topic ID = newly created post. 
+    Completely eliminates comment bumps.
+    """
+    discovered_topics = {}
     discover_url = f"{domain}/index.php?/discover/"
     try:
         r = cffi_requests.get(discover_url, impersonate="chrome120", timeout=15, headers=get_headers())
         if r.status_code == 200:
             soup = BeautifulSoup(r.text, "html.parser")
-            stream_items = soup.find_all(["li", "div"], class_=lambda c: c and ("ipsStreamItem" in c or "cStreamItem" in c))
-            
-            for item in stream_items:
-                item_text = item.get_text().lower()
-                
-                if "replied to" in item_text or "commented on" in item_text or "posted a comment" in item_text:
-                    continue
-
-                title_a = item.find("a", href=lambda h: h and "/topic/" in h)
-                if not title_a:
-                    continue
-
-                href = title_a.get("href", "")
-                if "&do=findComment" in href or "comment=" in href:
-                    continue
-
-                raw_title = title_a.get_text(strip=True)
-                if re.search(r"^\d+\s+repl(?:y|ies)", raw_title, re.IGNORECASE):
-                    continue
-
+            for a in soup.find_all("a", href=lambda h: h and "/topic/" in h):
+                href = a.get("href", "")
                 m = re.search(r"/topic/(\d+)-", href)
-                if m and int(m.group(1)) > 10000:
-                    tid = str(m.group(1))
-                    if tid not in seen_posts and tid not in [x[2] for x in new_items]:
-                        clean_url = clean_topic_url(href, domain)
-                        slug_title = extract_title_from_slug(clean_url)
-                        title = slug_title if (slug_title and len(slug_title) > len(raw_title)) else raw_title
-                        if not title or len(title) < 4:
-                            title = slug_title or "1TamilMV Release"
-                        new_items.append((title, clean_url, tid))
+                if not m:
+                    continue
+                tid_int = int(m.group(1))
+                if tid_int < 10000:  # Skip system placeholders
+                    continue
+                tid = str(tid_int)
+                if tid in seen_posts:
+                    continue
+                if tid not in discovered_topics:
+                    clean_url = clean_topic_url(href, domain)
+                    raw_title = a.get_text(strip=True)
+                    slug_title = extract_title_from_slug(clean_url)
+                    title = slug_title if (slug_title and len(slug_title) > len(raw_title)) else raw_title
+                    if not title or len(title) < 4:
+                        title = slug_title or "1TamilMV Release"
+                    discovered_topics[tid] = (title, clean_url, tid)
     except Exception as e:
         log_event("ERROR", f"Discover feed error: {e}")
 
-    return new_items
+    # Sort strictly descending by Topic ID (newest post creations first)
+    sorted_items = sorted(discovered_topics.values(), key=lambda x: int(x[2]), reverse=True)
+    return sorted_items
 
 def main_loop(max_duration=19800):
     start_time = time.time()
@@ -358,7 +354,7 @@ def main_loop(max_duration=19800):
                     log_event("COMMAND", f"Processing '{cmd}' from {cid}")
 
                     if cmd in ["/check", "/scan"]:
-                        send_msg(cid, "🔍 <i>Checking for genuine newly created topics (ignoring comments)...</i>")
+                        send_msg(cid, "🔍 <i>Checking for newly created releases...</i>")
                         domain = get_active_domain()
                         items = scrape_discover_feed(domain, seen_posts)
                         if not items:
@@ -380,7 +376,7 @@ def main_loop(max_duration=19800):
                             f"👤 <b>Access:</b> Locked to ID <code>{ALLOWED_CHAT_ID}</code>\n"
                             f"🌐 <b>Active Mirror:</b> {domain}\n"
                             f"📁 <b>Tracked Topics:</b> <b>{len(seen_posts)}</b> pure releases\n"
-                            f"🎯 <b>Filter:</b> Pure Topic Creations (Zero Comment Noise)\n"
+                            f"🎯 <b>Ordering:</b> Strict Numeric Topic ID (True Chronological)\n"
                             f"🕒 <b>Server Time:</b> <i>{get_now_ist_str()}</i>\n"
                             f"⚡ <b>Latency:</b> Instant (< 1s)"
                         ))
@@ -452,7 +448,7 @@ def main_loop(max_duration=19800):
                 domain = get_active_domain()
                 new_items = scrape_discover_feed(domain, seen_posts)
                 if new_items:
-                    log_event("AUTOSCAN", f"Found {len(new_items)} pure new releases automatically.")
+                    log_event("AUTOSCAN", f"Found {len(new_items)} new releases automatically.")
                     for t, l, tid in reversed(new_items[:8]):
                         details = extract_post_details(l, fallback_title=t)
                         if details:
