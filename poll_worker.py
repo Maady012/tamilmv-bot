@@ -75,7 +75,7 @@ def get_active_domain():
             if res.status_code == 200 and "tamilmv" in res.text.lower():
                 CACHED_DOMAIN = res.url.rstrip("/")
                 LAST_DOMAIN_CHECK = now
-                log_event("DOMAIN", f"Active mirror: {CACHED_DOMAIN}")
+                log_event("DOMAIN", f"Active mirror resolved: {CACHED_DOMAIN}")
                 return CACHED_DOMAIN
         except Exception:
             continue
@@ -113,8 +113,8 @@ def clean_magnet_label(label, fallback="Download Option"):
     m = re.search(r"(\b(?:4K|2160p|1080p|720p|HDRip|BluRay|HEVC|AVC|x264|x265)\b.*)", clean, re.IGNORECASE)
     if m:
         short = m.group(1).strip(" -_")
-        return short[:40] if len(short) > 3 else clean[:40]
-    return clean[:40] if clean else fallback
+        return short[:35] if len(short) > 3 else clean[:35]
+    return clean[:35] if clean else fallback
 
 def extract_post_details(topic_url, fallback_title=""):
     try:
@@ -184,7 +184,7 @@ def extract_post_details(topic_url, fallback_title=""):
         return {
             "title": title,
             "image": image_url,
-            "summary": "\n".join(desc_lines[:6]),
+            "summary": "\n".join(desc_lines[:4]),
             "magnets": magnets
         }
     except Exception as e:
@@ -199,11 +199,23 @@ def send_alert(chat_id, title, link, details=None):
     magnets = details.get("magnets", []) if details else []
     image_url = details.get("image") if details else None
 
-    # 1. Main Release Card (with Poster if available)
+    # Construct single message with embedded single-row 1-tap copy magnets
     caption = f"🎬 <b>{d_title}</b>\n\n"
     if summary:
         caption += f"📋 <i>{summary}</i>\n\n"
+
+    if magnets:
+        caption += "🧲 <b>Magnets (Tap to Copy):</b>\n"
+        for m in magnets[:3]:  # Top 3 resolutions to stay safely under 1024 char limits
+            safe_label = html.escape(m["label"])
+            caption += f"• <b>{safe_label}:</b> <code>{m['url']}</code>\n"
+        caption += "\n"
+
     caption += f"🔗 <a href='{link}'>Open on 1TamilMV</a>"
+
+    # Enforce Telegram caption limit
+    if len(caption) > 1000:
+        caption = caption[:950] + "...\n\n🔗 <a href='" + link + "'>Open on 1TamilMV</a>"
 
     photo_sent = False
     if image_url:
@@ -223,30 +235,12 @@ def send_alert(chat_id, title, link, details=None):
         try:
             requests.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                json={"chat_id": chat_id, "text": caption, "parse_mode": "HTML", "disable_web_page_preview": False},
+                json={"chat_id": chat_id, "text": caption, "parse_mode": "HTML", "disable_web_page_preview": True},
                 timeout=10
             )
             log_event("NOTIFY", f"Text alert sent: {d_title[:60]}")
         except Exception:
             pass
-
-    # 2. Separate 1-Tap Copyable Magnet Links Message
-    # Telegram code blocks (<code>...</code>) allow 1-tap copy directly into uTorrent / Flud / 1DM / LibreTorrent!
-    if magnets:
-        mag_text = "🧲 <b>1-Tap Copy Magnet Links:</b>\n<i>(Tap any box below to copy magnet directly)</i>\n\n"
-        for m in magnets[:5]:
-            safe_label = html.escape(m["label"])
-            mag_text += f"📦 <b>{safe_label}</b>\n<code>{m['url']}</code>\n\n"
-
-        try:
-            requests.post(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                json={"chat_id": chat_id, "text": mag_text, "parse_mode": "HTML", "disable_web_page_preview": True},
-                timeout=10
-            )
-            log_event("MAGNET_SENT", f"Dispatched {len(magnets[:5])} 1-tap copy magnets")
-        except Exception as e:
-            log_event("MAGNET_ERR", f"Failed to send magnet message: {e}")
 
 def send_msg(chat_id, text):
     try:
@@ -349,7 +343,7 @@ def main_loop(max_duration=19800):
                         send_msg(cid, f"🏓 <b>Pong!</b> Responsive as of {get_now_ist_str()}.")
 
                     elif cmd == "/latest":
-                        send_msg(cid, "🔍 <i>Fetching the latest live release with 1-tap copy magnets...</i>")
+                        send_msg(cid, "🔍 <i>Fetching latest release with embedded 1-tap copy magnets...</i>")
                         try:
                             domain = get_active_domain()
                             items = scrape_discover_feed(domain, set())
