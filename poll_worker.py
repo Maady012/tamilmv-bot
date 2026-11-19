@@ -429,7 +429,8 @@ def main_loop(max_duration=19800):
                         log_event("SECURITY", f"Dropped message from {cid}")
                         continue
 
-                    cmd = text.split()[0].lower()
+                    raw_cmd = text.split()[0].lower()
+                    cmd = raw_cmd.split("@")[0]
                     log_event("COMMAND", f"Processing '{cmd}' from {cid}")
 
                     if cmd in ["/check", "/scan"]:
