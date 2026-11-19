@@ -264,8 +264,9 @@ def send_alert(chat_id, title, link, details=None):
     inline_keyboard.append([{"text": "🌐 Open on 1TamilMV", "url": clean_url}])
     reply_markup = {"inline_keyboard": inline_keyboard}
 
-    if len(caption) > 1000:
-        caption = caption[:940] + "...\n\n🌐 <a href='" + clean_url + "'><b>[View on 1TamilMV]</b></a>"
+    # Never arbitrarily slice HTML formatted strings which breaks <code> tags
+    if len(caption) > 3800:
+        caption = caption[:3600] + "...\n\n🌐 <a href='" + clean_url + "'><b>[View on 1TamilMV]</b></a>"
 
     photo_sent = False
     if image_url:
@@ -294,6 +295,13 @@ def send_alert(chat_id, title, link, details=None):
                 log_event("NOTIFY", f"Text alert sent: {d_title[:60]}")
             else:
                 log_event("ERR", f"sendMessage failed {r.status_code}: {r.text[:100]}")
+                # Fallback to plain text if HTML parsing ever fails
+                clean_text = caption.replace("<b>", "").replace("</b>", "").replace("<code>", "").replace("</code>", "").replace("<i>", "").replace("</i>", "")
+                requests.post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                    json={"chat_id": chat_id, "text": clean_text, "disable_web_page_preview": True, "reply_markup": reply_markup},
+                    timeout=10
+                )
         except Exception as e:
             log_event("ERR", f"sendMessage exception: {e}")
 
