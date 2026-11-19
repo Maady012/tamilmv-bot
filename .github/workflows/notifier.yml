@@ -2,14 +2,16 @@ name: 1TamilMV Live Notifier
 
 on:
   schedule:
-    - cron: '0 */5 * * *'  # Seamlessly restarts a fresh runner every 5 hours 24/7
+    - cron: '0 */5 * * *'
   workflow_dispatch:
+
+concurrency:
+  group: tamilmv-bot-worker
+  cancel-in-progress: true
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -17,12 +19,11 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
+          cache: "pip"
 
       - name: Install Dependencies
-        run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
+        run: pip install -r requirements.txt
 
       - name: Execute Live Loop Worker
         env:
