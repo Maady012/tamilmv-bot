@@ -591,7 +591,7 @@ def main_loop(max_duration=19800):
                 domain = get_active_domain()
                 new_items = scrape_discover_feed(domain, seen_posts)
                 if new_items:
-                    log_event("AUTOSCAN", f"Found {len(new_items)} new releases automatically.")
+                    log_event("AUTOSCAN", f"Found {len(new_items)} new candidate releases.")
                     new_alerts = 0
                     for t, l, tid in reversed(new_items[:8]):
                         details = extract_post_details(l, fallback_title=t)
@@ -606,6 +606,8 @@ def main_loop(max_duration=19800):
                             log_event("WAIT_MAGNET", f"Topic {tid} has no magnet yet. Kept pending.")
                     if new_alerts > 0:
                         save_seen_posts(seen_posts)
+                else:
+                    log_event("HEARTBEAT", f"Scan complete. Up to date ({len(seen_posts)} tracked).")
             except Exception as e:
                 log_event("ERROR", f"Auto-scan exception: {e}")
 
