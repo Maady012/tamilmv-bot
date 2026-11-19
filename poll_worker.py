@@ -163,7 +163,6 @@ def extract_post_details(topic_url, fallback_title=""):
         if not title:
             title = fallback_title or slug_t or "1TamilMV Release"
 
-        # Explicit GDrive exclusion
         if "gdrive" in f"{title} {clean_url}".lower():
             return None
 
@@ -295,89 +294,69 @@ def send_msg(chat_id, text):
         pass
 
 def scrape_discover_feed(domain, seen_posts):
-    discovered_topics = {}
-    
-    urls_to_try = [
-        f"{domain}/index.php?/discover/",
-        f"{domain}/discover/",
-        f"{domain}/"
-    ]
-    
-    for url in urls_to_try:
-        try:
-            r = cffi_requests.get(url, impersonate="chrome120", timeout=12, headers=get_headers())
-            if r.status_code != 200:
-                continue
-                
+    new_items = []
+    discover_url = f"{domain}/index.php?/discover/"
+    try:
+        r = cffi_requests.get(discover_url, impersonate="chrome120", timeout=15, headers=get_headers())
+        if r.status_code == 200:
             soup = BeautifulSoup(r.text, "html.parser")
             
-            for a_tag in soup.find_all("a", href=re.compile(r"/topic/(\d+)-")):
-                href = a_tag["href"].strip()
+            stream_items = soup.find_all(["li", "div"], class_=lambda c: c and ("ipsStreamItem" in c or "cStreamItem" in c))
+            candidate_links = []
+            if stream_items:
+                for item in stream_items:
+                    a = item.find("a", href=lambda h: h and "/topic/" in h)
+                    if a:
+                        candidate_links.append(a)
+            else:
+                candidate_links = soup.find_all("a", href=lambda h: h and "/topic/" in h)
+
+            for a in candidate_links:
+                href = a.get("href", "")
                 m = re.search(r"/topic/(\d+)-", href)
-                if not m:
-                    continue
-                tid_int = int(m.group(1))
-                if tid_int < 10000:
-                    continue
-                tid = str(tid_int)
-                if tid in seen_posts:
-                    continue
+                if m and int(m.group(1)) > 10000:
+                    tid = str(m.group(1))
+                    if tid not in seen_posts and tid not in [x[2] for x in new_items]:
+                        full_url = clean_topic_url(href, domain)
+                        raw_title = a.get_text(strip=True)
+                        slug_title = extract_title_from_slug(full_url)
+                        title = slug_title if (slug_title and len(slug_title) > len(raw_title)) else raw_title
+                        if not title or len(title) < 4:
+                            title = slug_title or "1TamilMV Release"
+                        
+                        if "gdrive" in f"{title} {full_url}".lower():
+                            continue
 
-                if tid not in discovered_topics:
-                    clean_url = clean_topic_url(href, domain)
-                    raw_title = a_tag.get_text(strip=True)
-                    slug_title = extract_title_from_slug(clean_url)
-                    title = slug_title if (slug_title and len(slug_title) > len(raw_title)) else raw_title
-                    if not title or len(title) < 4:
-                        title = slug_title or "1TamilMV Release"
-
-                    combined_check = f"{title} {clean_url}".lower()
-                    if "gdrive" in combined_check:
-                        continue
-
-                    discovered_topics[tid] = (title, clean_url, tid)
-                    
-            if discovered_topics:
-                break
-        except Exception as e:
-            log_event("ERROR", f"Scrape attempt error on {url}: {e}")
-
-    return sorted(discovered_topics.values(), key=lambda x: int(x[2]), reverse=True)
-
-def handle_latest_command(cid, seen_posts):
-    send_msg(cid, "🔍 <i>Fetching the newest torrent release on 1TamilMV...</i>")
-    try:
-        curr_domain = get_active_domain(force_refresh=True)
-        all_topics = scrape_discover_feed(curr_domain, set())
-        
-        if not all_topics:
-            for cand in CANDIDATE_DOMAINS:
-                if cand != curr_domain:
-                    all_topics = scrape_discover_feed(cand, set())
-                    if all_topics:
-                        curr_domain = cand
-                        break
-
-        if not all_topics:
-            send_msg(cid, "⚠️ <b>Could not reach 1TamilMV mirrors at this moment.</b>\n<i>Please try again in a few seconds.</i>")
-            return
-
-        dispatched = False
-        for t_title, t_link, t_tid in all_topics[:10]:
-            dt = extract_post_details(t_link, fallback_title=t_title)
-            if dt and dt.get("magnets"):
-                send_alert(cid, t_title, t_link, dt)
-                seen_posts.add(t_tid)
-                save_seen_posts(seen_posts)
-                log_event("LATEST", f"Dispatched release {t_tid}: {t_title[:50]}")
-                dispatched = True
-                break
-
-        if not dispatched:
-            send_msg(cid, "ℹ️ New releases were detected, but uploader has not attached magnet links yet.")
+                        new_items.append((title, full_url, tid))
     except Exception as e:
-        log_event("LATEST_ERR", str(e))
-        send_msg(cid, f"⚠️ Error: {e}")
+        log_event("ERROR", f"Discover feed error: {e}")
+
+    # Fallback to homepage if discover feed returned 0 items
+    if not new_items:
+        try:
+            home_url = f"{domain}/"
+            r_home = cffi_requests.get(home_url, impersonate="chrome120", timeout=12, headers=get_headers())
+            if r_home.status_code == 200:
+                soup_home = BeautifulSoup(r_home.text, "html.parser")
+                for a in soup_home.find_all("a", href=re.compile(r"/topic/(\d+)-")):
+                    href = a.get("href", "")
+                    m = re.search(r"/topic/(\d+)-", href)
+                    if m and int(m.group(1)) > 10000:
+                        tid = str(m.group(1))
+                        if tid not in seen_posts and tid not in [x[2] for x in new_items]:
+                            full_url = clean_topic_url(href, domain)
+                            raw_title = a.get_text(strip=True)
+                            slug_title = extract_title_from_slug(full_url)
+                            title = slug_title if (slug_title and len(slug_title) > len(raw_title)) else raw_title
+                            if not title or len(title) < 4:
+                                title = slug_title or "1TamilMV Release"
+                            if "gdrive" in f"{title} {full_url}".lower():
+                                continue
+                            new_items.append((title, full_url, tid))
+        except Exception:
+            pass
+
+    return new_items
 
 def main_loop(max_duration=19800):
     start_time = time.time()
@@ -387,7 +366,7 @@ def main_loop(max_duration=19800):
     last_scrape = 0
     scrape_interval = random.randint(300, 420)
 
-    log_event("START", f"Live continuous worker active on {domain}. Tracked: {len(seen_posts)}")
+    log_event("START", f"Worker active in V2 stable mode. Domain: {domain}. Tracked: {len(seen_posts)}")
 
     while time.time() - start_time < max_duration:
         try:
@@ -457,7 +436,7 @@ def main_loop(max_duration=19800):
                     elif cmd == "/status":
                         send_msg(cid, (
                             "━━━━━━━━━━━━━━━━━━━━━━\n"
-                            "🛡 <b>1TamilMV Live Status</b>\n"
+                            "🛡 <b>1TamilMV Live Status (V2 Stable)</b>\n"
                             "━━━━━━━━━━━━━━━━━━━━━━\n\n"
                             f"👤 <b>Access:</b> Locked to ID <code>{ALLOWED_CHAT_ID}</code>\n"
                             f"🌐 <b>Active Mirror:</b> {domain}\n"
@@ -472,7 +451,24 @@ def main_loop(max_duration=19800):
                         send_msg(cid, f"🏓 <b>Pong!</b> Responsive as of <i>{get_now_ist_str()}</i>.")
 
                     elif cmd == "/latest":
-                        handle_latest_command(cid, seen_posts)
+                        send_msg(cid, "🔍 <i>Fetching newest release from 1TamilMV...</i>")
+                        try:
+                            domain = get_active_domain()
+                            items = scrape_discover_feed(domain, set())
+                            found = False
+                            for t, l, tid in items[:6]:
+                                dt = extract_post_details(l, fallback_title=t)
+                                if dt and dt.get("magnets"):
+                                    send_alert(cid, t, l, dt)
+                                    seen_posts.add(tid)
+                                    save_seen_posts(seen_posts)
+                                    log_event("LATEST", f"Dispatched release {tid}: {t[:50]}")
+                                    found = True
+                                    break
+                            if not found:
+                                send_msg(cid, "⚠️ Could not parse feed at this moment.")
+                        except Exception as e:
+                            send_msg(cid, f"⚠️ Error: {e}")
 
                     elif cmd == "/logs":
                         try:
