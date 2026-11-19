@@ -1,4 +1,4 @@
-name: Test Inspect Pursuit Page
+name: Test Discover Feed Topics
 on: workflow_dispatch
 jobs:
   test:
@@ -11,15 +11,15 @@ jobs:
       - run: pip install -r requirements.txt
       - run: |
           python3 -c "
-          from curl_cffi import requests as cffi_requests
-          from bs4 import BeautifulSoup
-          from poll_worker import get_active_domain, extract_post_details
+          from poll_worker import get_active_domain, scrape_discover_feed, extract_post_details
 
           domain = get_active_domain()
-          u = f'{domain}/index.php?/forums/topic/201135-the-pursuit-of-happyness-2006-1080p-720p-bluray-remux-avc-hevc-tamil-dd-20-224kbps-telugu-malayalam-hindi-dd-51-640kbps-english-dts-hdma-51-2147kbps-28gb-165gb-58gb-2gb-11gb-gdrive-esub/'
-          
-          details = extract_post_details(u)
-          print('Extracted details title:', details.get('title'))
-          print('Extracted magnets count:', len(details.get('magnets', [])))
-          print('Extracted torrent_files:', details.get('torrent_files'))
+          items = scrape_discover_feed(domain, set())
+          print('Total items from discover feed:', len(items))
+          for title, link, tid in items[:6]:
+              details = extract_post_details(link, fallback_title=title)
+              print('---')
+              print(f'TID {tid}: {title[:50]}')
+              print('Magnets:', len(details.get('magnets', [])))
+              print('Torrents:', details.get('torrent_files'))
           "
