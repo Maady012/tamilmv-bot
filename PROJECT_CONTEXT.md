@@ -39,3 +39,11 @@
 - `requirements.txt`: Python dependencies (`curl_cffi`, `beautifulsoup4`, `requests`).
 - `seen_posts.json`: Persistent history of dispatched topic IDs.
 - `bot_activity.log`: Timestamped activity and debug event log.
+
+---
+
+## 5. Version 2.0 Enhancements (Multi-Magnet Architecture)
+- **Multi-Resolution Parser:** Automatically discovers and isolates each distinct magnet link per release.
+- **Label Formatting:** Cleans raw forum titles down to exact qualities (e.g. `1080p (2.4 GB)`, `720p (1.4 GB)`, `450MB Rip`).
+- **Telegram Caption Safety:** Limits output to a maximum of 6 primary download options to avoid breaching the Telegram 1024-character caption limit.
+- **GitHub Action Quota Safety:** Stays well within the 2,000 monthly free minute budget with automated memory recycling.
