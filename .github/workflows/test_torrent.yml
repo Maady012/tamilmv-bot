@@ -1,4 +1,4 @@
-name: Test Inspect Torrent Links
+name: Test Download Attachment
 on: workflow_dispatch
 jobs:
   test:
@@ -12,39 +12,20 @@ jobs:
       - run: |
           python3 -c "
           from curl_cffi import requests as cffi_requests
-          from bs4 import BeautifulSoup
-          import re
-          from poll_worker import get_active_domain
+          import requests
 
-          domain = get_active_domain()
-          test_urls = [
-              f'{domain}/index.php?/forums/topic/201135-the-pursuit-of-happyness-2006-1080p-720p-bluray-remux-avc-hevc-tamil-dd-20-224kbps-telugu-malayalam-hindi-dd-51-640kbps-english-dts-hdma-51-2147kbps-28gb-165gb-58gb-2gb-11gb-gdrive-esub/',
-              f'{domain}/index.php?/forums/topic/201134-the-altruists-2026-s01-ep-01-08-true-web-dl-1080p-720p-avc-tamil-telugu-hindi-eng-dd51-192kbps-5gb-35gb-1gb-esub/'
-          ]
-
-          for u in test_urls:
-              print('=== INSPECTING:', u[:60], '===')
-              res = cffi_requests.get(u, impersonate='chrome120', timeout=12)
-              soup = BeautifulSoup(res.text, 'html.parser')
-              # Find all comment wraps / posts
-              posts = soup.find_all('article', class_='cPost')
-              print(f'Total posts in thread: {len(posts)}')
-              
-              # First post only (the original release post)
-              if posts:
-                  first_post = posts[0]
-                  first_content = first_post.find('div', {'data-role': 'commentContent'}) or first_post
-                  print('Looking inside first post only:')
-                  for a in first_content.find_all('a', href=True):
-                      href = a['href']
-                      if 'attachment.php' in href or '.torrent' in href:
-                          print('ATTACHMENT IN FIRST POST:', href, '| Text:', a.get_text(strip=True))
-              
-              print('Looking across all a tags in document with attachment:')
-              for a in soup.find_all('a', href=True):
-                  href = a['href']
-                  if 'attachment.php' in href:
-                      parent_article = a.find_parent('article')
-                      art_id = parent_article.get('id') if parent_article else 'NO_ARTICLE'
-                      print('ATTACHMENT:', href, '| Text:', a.get_text(strip=True), '| Parent Article:', art_id)
+          url = 'https://www.1tamilmv.io/applications/core/interface/file/attachment.php?id=161523&key=4cd7fe27b9d2cc4ab6f0d77a63811186'
+          
+          # Test with curl_cffi
+          r = cffi_requests.get(url, impersonate='chrome120', timeout=12)
+          print('curl_cffi status:', r.status_code, 'Content-Type:', r.headers.get('content-type'), 'Len:', len(r.content))
+          print('First 100 bytes:', r.content[:100])
+          
+          # Test with plain requests (as was done in poll_worker.py)
+          try:
+              r2 = requests.get(url, timeout=12)
+              print('requests status:', r2.status_code, 'Content-Type:', r2.headers.get('content-type'), 'Len:', len(r2.content))
+              print('Requests first 100 bytes:', r2.content[:100])
+          except Exception as e:
+              print('Requests err:', e)
           "
