@@ -17,6 +17,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ALLOWED_CHAT_ID = str(os.getenv("TELEGRAM_CHAT_ID", "565062030")).strip()
 STATE_FILE = "seen_posts.json"
+LATEST_PREVIEW_FILE = "last_previewed_id.txt"
 DEBUG_LOG_FILE = "bot_activity.log"
 
 USER_AGENTS = [
@@ -39,7 +40,6 @@ CANDIDATE_DOMAINS = [
 
 CACHED_DOMAIN = None
 LAST_DOMAIN_CHECK = 0
-LAST_SERVED_LATEST_ID = None
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -54,6 +54,22 @@ def log_event(event_type, details):
     except Exception:
         pass
     logging.info(f"[{event_type}] {details}")
+
+def get_last_previewed_id():
+    if os.path.exists(LATEST_PREVIEW_FILE):
+        try:
+            with open(LATEST_PREVIEW_FILE, "r") as f:
+                return f.read().strip()
+        except Exception:
+            pass
+    return None
+
+def set_last_previewed_id(tid):
+    try:
+        with open(LATEST_PREVIEW_FILE, "w") as f:
+            f.write(str(tid).strip())
+    except Exception:
+        pass
 
 def get_headers():
     return {
@@ -277,7 +293,6 @@ def scrape_discover_feed(domain, seen_posts):
             for item in stream_items:
                 item_text = item.get_text().lower()
                 
-                # Drop comment/reply noise
                 if "replied to" in item_text or "commented on" in item_text or "posted a comment" in item_text:
                     continue
 
@@ -309,7 +324,6 @@ def scrape_discover_feed(domain, seen_posts):
     return new_items
 
 def main_loop(max_duration=19800):
-    global LAST_SERVED_LATEST_ID
     start_time = time.time()
     seen_posts = load_seen_posts()
     domain = get_active_domain()
@@ -317,7 +331,7 @@ def main_loop(max_duration=19800):
     last_scrape = 0
     scrape_interval = random.randint(300, 420)
 
-    log_event("START", f"Classifier worker active on {domain}. Tracked: {len(seen_posts)}")
+    log_event("START", f"Production worker initialized on {domain}. Tracked: {len(seen_posts)}")
 
     while time.time() - start_time < max_duration:
         try:
@@ -380,8 +394,9 @@ def main_loop(max_duration=19800):
                             domain = get_active_domain()
                             items = scrape_discover_feed(domain, set())
                             found_one = False
+                            last_preview_id = get_last_previewed_id()
                             for t, l, tid in items[:5]:
-                                if tid == LAST_SERVED_LATEST_ID:
+                                if str(tid) == str(last_preview_id):
                                     send_msg(cid, f"ℹ️ <b>No newer release since your last check!</b>\n\nThe newest topic on 1TamilMV is still:\n📌 <b>{html.escape(t)}</b>")
                                     log_event("LATEST", f"Repeated /latest for topic {tid}, informed user.")
                                     found_one = True
@@ -390,7 +405,7 @@ def main_loop(max_duration=19800):
                                     dt = extract_post_details(l, fallback_title=t)
                                     if dt:
                                         send_alert(cid, t, l, dt)
-                                        LAST_SERVED_LATEST_ID = tid
+                                        set_last_previewed_id(tid)
                                         log_event("LATEST", f"Served pure topic {tid}: {t[:50]}")
                                         found_one = True
                                         break
