@@ -99,9 +99,14 @@ def load_seen_posts():
     return set()
 
 def save_seen_posts(seen_set):
-    trimmed = list(str(x) for x in seen_set if str(x).isdigit())[-1000:]
+    trimmed = sorted(list(str(x) for x in seen_set if str(x).isdigit()), key=lambda x: int(x))[-1000:]
     with open(STATE_FILE, "w") as f:
         json.dump(trimmed, f, indent=2)
+    # Also persist to git immediately so state is never lost across workflow restarts
+    try:
+        os.system("git add seen_posts.json && git diff --staged --quiet || (git commit -m 'chore: persist seen_posts' && git push origin main >/dev/null 2>&1 &)")
+    except Exception:
+        pass
 
 def clean_topic_url(raw_url, domain):
     if raw_url.startswith("/"):
@@ -398,7 +403,7 @@ def main_loop(max_duration=19800):
     seen_posts = load_seen_posts()
     domain = get_active_domain()
     offset = 0
-    last_scrape = 0
+    last_scrape = time.time()
     scrape_interval = random.randint(300, 420)
 
     log_event("START", f"Production worker initialized on {domain}. Tracked: {len(seen_posts)}")
