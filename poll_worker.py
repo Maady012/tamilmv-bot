@@ -133,7 +133,7 @@ def clean_magnet_label(label, fallback="Option"):
 
 def extract_post_details(topic_url, fallback_title=""):
     try:
-        time.sleep(random.uniform(0.5, 1.2))
+        pass
         domain = get_active_domain()
         clean_url = clean_topic_url(topic_url, domain)
         res = cffi_requests.get(clean_url, impersonate="chrome120", timeout=12, headers=get_headers())
