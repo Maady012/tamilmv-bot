@@ -75,7 +75,7 @@ def get_active_domain():
             if res.status_code == 200 and "tamilmv" in res.text.lower():
                 CACHED_DOMAIN = res.url.rstrip("/")
                 LAST_DOMAIN_CHECK = now
-                log_event("DOMAIN", f"Active mirror resolved: {CACHED_DOMAIN}")
+                log_event("DOMAIN", f"Active mirror: {CACHED_DOMAIN}")
                 return CACHED_DOMAIN
         except Exception:
             continue
@@ -106,7 +106,7 @@ def extract_title_from_slug(url):
             return clean
     return ""
 
-def clean_magnet_label(label, fallback="Magnet Link"):
+def clean_magnet_label(label, fallback="Download Option"):
     if not label:
         return fallback
     clean = re.sub(r"(?i)www\.1tamilmv\.\w+\s*-\s*", "", label)
@@ -125,7 +125,7 @@ def extract_post_details(topic_url, fallback_title=""):
             
         soup = BeautifulSoup(res.text, "html.parser")
         
-        # 1. Title Extraction
+        # 1. Clean Title
         title = ""
         title_tag = soup.find("title")
         if title_tag:
@@ -173,7 +173,7 @@ def extract_post_details(topic_url, fallback_title=""):
                         raw_label = a.get_text(strip=True)
                         parsed = urllib.parse.parse_qs(urllib.parse.urlparse(href).query)
                         dn = parsed.get("dn", [""])[0]
-                        label = clean_magnet_label(dn or raw_label, f"Download Option {len(magnets)+1}")
+                        label = clean_magnet_label(dn or raw_label, f"Option {len(magnets)+1}")
                         magnets.append({"url": href, "label": label})
 
             for line in post_content.get_text(separator="\n", strip=True).splitlines():
@@ -199,22 +199,13 @@ def send_alert(chat_id, title, link, details=None):
     magnets = details.get("magnets", []) if details else []
     image_url = details.get("image") if details else None
 
+    # 1. Main Release Card (with Poster if available)
     caption = f"🎬 <b>{d_title}</b>\n\n"
     if summary:
         caption += f"📋 <i>{summary}</i>\n\n"
-    
-    if magnets:
-        caption += "🧲 <b>Direct Magnet Links:</b>\n"
-        for m in magnets[:6]:
-            safe_label = html.escape(m["label"])
-            caption += f"• <a href='{m['url']}'><b>{safe_label}</b></a>\n"
-        caption += "\n"
-
     caption += f"🔗 <a href='{link}'>Open on 1TamilMV</a>"
 
-    if len(caption) > 1000:
-        caption = caption[:960] + "...\n\n🔗 <a href='" + link + "'>Open on 1TamilMV</a>"
-
+    photo_sent = False
     if image_url:
         try:
             r = requests.post(
@@ -223,20 +214,39 @@ def send_alert(chat_id, title, link, details=None):
                 timeout=10
             )
             if r.status_code == 200:
+                photo_sent = True
                 log_event("NOTIFY", f"Photo alert sent: {d_title[:60]}")
-                return
         except Exception:
             pass
 
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            json={"chat_id": chat_id, "text": caption, "parse_mode": "HTML", "disable_web_page_preview": False},
-            timeout=10
-        )
-        log_event("NOTIFY", f"Text alert sent: {d_title[:60]}")
-    except Exception:
-        pass
+    if not photo_sent:
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                json={"chat_id": chat_id, "text": caption, "parse_mode": "HTML", "disable_web_page_preview": False},
+                timeout=10
+            )
+            log_event("NOTIFY", f"Text alert sent: {d_title[:60]}")
+        except Exception:
+            pass
+
+    # 2. Separate 1-Tap Copyable Magnet Links Message
+    # Telegram code blocks (<code>...</code>) allow 1-tap copy directly into uTorrent / Flud / 1DM / LibreTorrent!
+    if magnets:
+        mag_text = "🧲 <b>1-Tap Copy Magnet Links:</b>\n<i>(Tap any box below to copy magnet directly)</i>\n\n"
+        for m in magnets[:5]:
+            safe_label = html.escape(m["label"])
+            mag_text += f"📦 <b>{safe_label}</b>\n<code>{m['url']}</code>\n\n"
+
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                json={"chat_id": chat_id, "text": mag_text, "parse_mode": "HTML", "disable_web_page_preview": True},
+                timeout=10
+            )
+            log_event("MAGNET_SENT", f"Dispatched {len(magnets[:5])} 1-tap copy magnets")
+        except Exception as e:
+            log_event("MAGNET_ERR", f"Failed to send magnet message: {e}")
 
 def send_msg(chat_id, text):
     try:
@@ -339,7 +349,7 @@ def main_loop(max_duration=19800):
                         send_msg(cid, f"🏓 <b>Pong!</b> Responsive as of {get_now_ist_str()}.")
 
                     elif cmd == "/latest":
-                        send_msg(cid, "🔍 <i>Fetching the latest live release with magnet links...</i>")
+                        send_msg(cid, "🔍 <i>Fetching the latest live release with 1-tap copy magnets...</i>")
                         try:
                             domain = get_active_domain()
                             items = scrape_discover_feed(domain, set())
@@ -372,7 +382,7 @@ def main_loop(max_duration=19800):
                         send_msg(cid, (
                             "🤖 <b>Private 1TamilMV Notifier:</b>\n\n"
                             "👉 /check - Scan for new releases now\n"
-                            "👉 /latest - Preview latest release with direct magnet links\n"
+                            "👉 /latest - Preview latest release with 1-tap copy magnets\n"
                             "👉 /status - Check live health and server time\n"
                             "👉 /logs - View live event logs for debugging\n"
                             "👉 /ping - Test response speed"
