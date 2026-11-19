@@ -179,7 +179,6 @@ def extract_post_details(topic_url, fallback_title=""):
             for line in post_content.get_text(separator="\n", strip=True).splitlines():
                 line = line.strip()
                 if line and 5 < len(line) < 130 and not line.startswith("http") and not line.startswith("magnet:"):
-                    # Exclude generic forum disclaimer phrases
                     if not any(skip in line.lower() for skip in ["telegram channel", "click here", "audio credits", "official channel"]):
                         desc_lines.append(line)
 
@@ -201,7 +200,7 @@ def send_alert(chat_id, title, link, details=None):
     magnets = details.get("magnets", []) if details else []
     image_url = details.get("image") if details else None
 
-    # Elegant, structured message formatting with spacing & emojis
+    # Elegant, structured message card with bold headers & clean spacing
     caption = "━━━━━━━━━━━━━━━━━━━━━━\n"
     caption += f"🎬 <b>{d_title}</b>\n"
     caption += "━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -209,12 +208,15 @@ def send_alert(chat_id, title, link, details=None):
     if summary:
         caption += f"📋 <b>Release Info:</b>\n<i>{summary}</i>\n\n"
 
+    # Explicit handling for posts with and without magnets
     if magnets:
         caption += "🧲 <b>Magnets (Tap to Copy):</b>\n"
         for m in magnets[:3]:
             safe_label = html.escape(m["label"])
             caption += f"🔹 <b>{safe_label}:</b> <code>{m['url']}</code>\n"
         caption += "\n"
+    else:
+        caption += "🧲 <b>Magnets:</b> <i>No magnet link available for this post</i>\n\n"
 
     caption += f"🌐 <a href='{link}'><b>[View Full Topic on 1TamilMV]</b></a>"
 
@@ -349,7 +351,7 @@ def main_loop(max_duration=19800):
                         send_msg(cid, f"🏓 <b>Pong!</b> Responsive as of <i>{get_now_ist_str()}</i>.")
 
                     elif cmd == "/latest":
-                        send_msg(cid, "🔍 <i>Fetching latest release with formatted 1-tap magnets...</i>")
+                        send_msg(cid, "🔍 <i>Fetching latest release card...</i>")
                         try:
                             domain = get_active_domain()
                             items = scrape_discover_feed(domain, set())
