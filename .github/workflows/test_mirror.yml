@@ -1,4 +1,4 @@
-name: Test Mirror Follower
+name: Test Mirror Redirect Correct
 on: workflow_dispatch
 jobs:
   test:
@@ -12,18 +12,18 @@ jobs:
       - run: |
           python3 -c "
           from curl_cffi import requests as cffi_requests
-          import re
 
           test_domains = [
               'https://www.1tamilmv.io',
               'https://www.1tamilmv.fi',
-              'https://www.1tamilmv.pm',
+              'https://1tamilmv.cz',
+              'https://1tamilmv.ink',
               'https://1tamilmv.org'
           ]
           for d in test_domains:
               try:
-                  r = cffi_requests.get(d, impersonate='chrome120', timeout=8, allow_redirects=True)
-                  print(f'{d} -> Final URL: {r.url}, Status: {r.status_code}, Title has tamilmv: {bool("tamilmv" in r.text.lower())}')
+                  r = cffi_requests.get(d, impersonate='chrome120', timeout=8, allow_redirects=True, verify=False)
+                  print(f'{d} -> Final URL: {r.url}, Status: {r.status_code}, Found: {bool("tamilmv" in r.text.lower())}')
               except Exception as e:
                   print(f'{d} -> Err: {e}')
           "
