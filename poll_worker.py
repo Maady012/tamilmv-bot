@@ -113,8 +113,8 @@ def clean_magnet_label(label, fallback="Download Option"):
     m = re.search(r"(\b(?:4K|2160p|1080p|720p|HDRip|BluRay|HEVC|AVC|x264|x265)\b.*)", clean, re.IGNORECASE)
     if m:
         short = m.group(1).strip(" -_")
-        return short[:35] if len(short) > 3 else clean[:35]
-    return clean[:35] if clean else fallback
+        return short[:32] if len(short) > 3 else clean[:32]
+    return clean[:32] if clean else fallback
 
 def extract_post_details(topic_url, fallback_title=""):
     try:
@@ -179,12 +179,14 @@ def extract_post_details(topic_url, fallback_title=""):
             for line in post_content.get_text(separator="\n", strip=True).splitlines():
                 line = line.strip()
                 if line and 5 < len(line) < 130 and not line.startswith("http") and not line.startswith("magnet:"):
-                    desc_lines.append(line)
+                    # Exclude generic forum disclaimer phrases
+                    if not any(skip in line.lower() for skip in ["telegram channel", "click here", "audio credits", "official channel"]):
+                        desc_lines.append(line)
 
         return {
             "title": title,
             "image": image_url,
-            "summary": "\n".join(desc_lines[:4]),
+            "summary": "\n".join(desc_lines[:3]),
             "magnets": magnets
         }
     except Exception as e:
@@ -199,23 +201,25 @@ def send_alert(chat_id, title, link, details=None):
     magnets = details.get("magnets", []) if details else []
     image_url = details.get("image") if details else None
 
-    # Construct single message with embedded single-row 1-tap copy magnets
-    caption = f"🎬 <b>{d_title}</b>\n\n"
+    # Elegant, structured message formatting with spacing & emojis
+    caption = "━━━━━━━━━━━━━━━━━━━━━━\n"
+    caption += f"🎬 <b>{d_title}</b>\n"
+    caption += "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+
     if summary:
-        caption += f"📋 <i>{summary}</i>\n\n"
+        caption += f"📋 <b>Release Info:</b>\n<i>{summary}</i>\n\n"
 
     if magnets:
         caption += "🧲 <b>Magnets (Tap to Copy):</b>\n"
-        for m in magnets[:3]:  # Top 3 resolutions to stay safely under 1024 char limits
+        for m in magnets[:3]:
             safe_label = html.escape(m["label"])
-            caption += f"• <b>{safe_label}:</b> <code>{m['url']}</code>\n"
+            caption += f"🔹 <b>{safe_label}:</b> <code>{m['url']}</code>\n"
         caption += "\n"
 
-    caption += f"🔗 <a href='{link}'>Open on 1TamilMV</a>"
+    caption += f"🌐 <a href='{link}'><b>[View Full Topic on 1TamilMV]</b></a>"
 
-    # Enforce Telegram caption limit
     if len(caption) > 1000:
-        caption = caption[:950] + "...\n\n🔗 <a href='" + link + "'>Open on 1TamilMV</a>"
+        caption = caption[:940] + "...\n\n🌐 <a href='" + link + "'><b>[View on 1TamilMV]</b></a>"
 
     photo_sent = False
     if image_url:
@@ -330,20 +334,22 @@ def main_loop(max_duration=19800):
 
                     elif cmd == "/status":
                         send_msg(cid, (
-                            f"🛡 <b>1TamilMV Live Status</b>\n\n"
-                            f"🔒 <b>User Access:</b> Locked to your ID ({ALLOWED_CHAT_ID})\n"
+                            "━━━━━━━━━━━━━━━━━━━━━━\n"
+                            "🛡 <b>1TamilMV Live Status</b>\n"
+                            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                            f"👤 <b>Access:</b> Locked to ID <code>{ALLOWED_CHAT_ID}</code>\n"
                             f"🌐 <b>Active Mirror:</b> {domain}\n"
-                            f"📁 <b>Tracked:</b> {len(seen_posts)} posts recorded\n"
-                            f"🕒 <b>Server Time:</b> {get_now_ist_str()}\n"
-                            f"⚡ <b>Command Latency:</b> Instant (< 1s)\n"
+                            f"📁 <b>Tracked:</b> <b>{len(seen_posts)}</b> posts recorded\n"
+                            f"🕒 <b>Server Time:</b> <i>{get_now_ist_str()}</i>\n"
+                            f"⚡ <b>Latency:</b> Instant (< 1s)\n"
                             f"🔄 <b>Auto-Scan:</b> Randomized Jitter (5-7m)"
                         ))
 
                     elif cmd == "/ping":
-                        send_msg(cid, f"🏓 <b>Pong!</b> Responsive as of {get_now_ist_str()}.")
+                        send_msg(cid, f"🏓 <b>Pong!</b> Responsive as of <i>{get_now_ist_str()}</i>.")
 
                     elif cmd == "/latest":
-                        send_msg(cid, "🔍 <i>Fetching latest release with embedded 1-tap copy magnets...</i>")
+                        send_msg(cid, "🔍 <i>Fetching latest release with formatted 1-tap magnets...</i>")
                         try:
                             domain = get_active_domain()
                             items = scrape_discover_feed(domain, set())
@@ -365,7 +371,12 @@ def main_loop(max_duration=19800):
                             if os.path.exists(DEBUG_LOG_FILE):
                                 with open(DEBUG_LOG_FILE, "r", encoding="utf-8") as f:
                                     recent = f.readlines()[-12:]
-                                log_text = "📜 <b>Recent Bot Event Logs:</b>\n\n<pre>" + html.escape("".join(recent)) + "</pre>"
+                                log_text = (
+                                    "━━━━━━━━━━━━━━━━━━━━━━\n"
+                                    "📜 <b>Recent Bot Event Logs</b>\n"
+                                    "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                                    "<pre>" + html.escape("".join(recent)) + "</pre>"
+                                )
                                 send_msg(cid, log_text)
                             else:
                                 send_msg(cid, "ℹ️ No event logs recorded yet.")
@@ -374,12 +385,14 @@ def main_loop(max_duration=19800):
 
                     elif cmd in ["/start", "/help"]:
                         send_msg(cid, (
-                            "🤖 <b>Private 1TamilMV Notifier:</b>\n\n"
-                            "👉 /check - Scan for new releases now\n"
-                            "👉 /latest - Preview latest release with 1-tap copy magnets\n"
-                            "👉 /status - Check live health and server time\n"
-                            "👉 /logs - View live event logs for debugging\n"
-                            "👉 /ping - Test response speed"
+                            "━━━━━━━━━━━━━━━━━━━━━━\n"
+                            "🤖 <b>1TamilMV Notifier Commands</b>\n"
+                            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                            "👉 <b>/check</b> - Scan for new releases now\n"
+                            "👉 <b>/latest</b> - Preview latest release card\n"
+                            "👉 <b>/status</b> - System health & mirror stats\n"
+                            "👉 <b>/logs</b> - View recent event logs\n"
+                            "👉 <b>/ping</b> - Test response speed"
                         ))
         except Exception:
             pass
