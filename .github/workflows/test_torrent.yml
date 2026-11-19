@@ -1,0 +1,50 @@
+name: Test Inspect Torrent Links
+on: workflow_dispatch
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - run: |
+          python3 -c "
+          from curl_cffi import requests as cffi_requests
+          from bs4 import BeautifulSoup
+          import re
+          from poll_worker import get_active_domain
+
+          domain = get_active_domain()
+          test_urls = [
+              f'{domain}/index.php?/forums/topic/201135-the-pursuit-of-happyness-2006-1080p-720p-bluray-remux-avc-hevc-tamil-dd-20-224kbps-telugu-malayalam-hindi-dd-51-640kbps-english-dts-hdma-51-2147kbps-28gb-165gb-58gb-2gb-11gb-gdrive-esub/',
+              f'{domain}/index.php?/forums/topic/201134-the-altruists-2026-s01-ep-01-08-true-web-dl-1080p-720p-avc-tamil-telugu-hindi-eng-dd51-192kbps-5gb-35gb-1gb-esub/'
+          ]
+
+          for u in test_urls:
+              print('=== INSPECTING:', u[:60], '===')
+              res = cffi_requests.get(u, impersonate='chrome120', timeout=12)
+              soup = BeautifulSoup(res.text, 'html.parser')
+              # Find all comment wraps / posts
+              posts = soup.find_all('article', class_='cPost')
+              print(f'Total posts in thread: {len(posts)}')
+              
+              # First post only (the original release post)
+              if posts:
+                  first_post = posts[0]
+                  first_content = first_post.find('div', {'data-role': 'commentContent'}) or first_post
+                  print('Looking inside first post only:')
+                  for a in first_content.find_all('a', href=True):
+                      href = a['href']
+                      if 'attachment.php' in href or '.torrent' in href:
+                          print('ATTACHMENT IN FIRST POST:', href, '| Text:', a.get_text(strip=True))
+              
+              print('Looking across all a tags in document with attachment:')
+              for a in soup.find_all('a', href=True):
+                  href = a['href']
+                  if 'attachment.php' in href:
+                      parent_article = a.find_parent('article')
+                      art_id = parent_article.get('id') if parent_article else 'NO_ARTICLE'
+                      print('ATTACHMENT:', href, '| Text:', a.get_text(strip=True), '| Parent Article:', art_id)
+          "
