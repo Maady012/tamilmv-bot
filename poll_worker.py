@@ -41,7 +41,7 @@ CANDIDATE_DOMAINS = [
 
 CACHED_DOMAIN = None
 LAST_DOMAIN_CHECK = 0
-CALLBACK_CACHE = {}
+CALLBACK_CACHE = {}  # In-memory map for inline buttons: button_id -> magnet_url
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -66,10 +66,10 @@ def get_headers():
         "Upgrade-Insecure-Requests": "1",
     }
 
-def get_active_domain(force_refresh=False):
+def get_active_domain():
     global CACHED_DOMAIN, LAST_DOMAIN_CHECK
     now = time.time()
-    if not force_refresh and CACHED_DOMAIN and (now - LAST_DOMAIN_CHECK < 1800):
+    if CACHED_DOMAIN and (now - LAST_DOMAIN_CHECK < 1800):
         return CACHED_DOMAIN
 
     for base_url in CANDIDATE_DOMAINS:
@@ -83,7 +83,10 @@ def get_active_domain(force_refresh=False):
         except Exception:
             continue
             
-    return CACHED_DOMAIN or "https://www.1tamilmv.ceo"
+    # Auto-Health Notification if all mirrors fail
+    log_event("HEALTH_ALERT", "All candidate mirrors failed responsiveness check")
+    send_msg(ALLOWED_CHAT_ID, "⚠️ <b>Health Alert:</b> All candidate mirrors are currently unreachable. Waiting for active domain redirect...")
+    return CACHED_DOMAIN or "https://www.1tamilmv.io"
 
 def load_seen_posts():
     if os.path.exists(STATE_FILE):
@@ -130,6 +133,7 @@ def clean_magnet_label(label, fallback="Option"):
 
 def extract_post_details(topic_url, fallback_title=""):
     try:
+        time.sleep(random.uniform(0.5, 1.2))
         domain = get_active_domain()
         clean_url = clean_topic_url(topic_url, domain)
         res = cffi_requests.get(clean_url, impersonate="chrome120", timeout=12, headers=get_headers())
@@ -163,6 +167,7 @@ def extract_post_details(topic_url, fallback_title=""):
         if not title:
             title = fallback_title or slug_t or "1TamilMV Release"
 
+        # Explicit GDrive exclusion
         if "gdrive" in f"{title} {clean_url}".lower():
             return None
 
@@ -181,6 +186,7 @@ def extract_post_details(topic_url, fallback_title=""):
             seen_hashes = set()
             for a in post_content.find_all("a", href=True):
                 href = a["href"].strip()
+                # Magnet Link
                 if href.startswith("magnet:?"):
                     hash_match = re.search(r"urn:btih:([a-zA-Z0-9]+)", href)
                     bt_hash = hash_match.group(1).lower() if hash_match else href
@@ -209,6 +215,7 @@ def extract_post_details(topic_url, fallback_title=""):
         return None
 
 def add_to_torbox(magnet_url):
+    """Adds a magnet directly to your TorBox cloud."""
     if not TORBOX_API_KEY:
         return False, "TorBox API Key is not configured."
     url = "https://api.torbox.app/v1/api/torrents/createtorrent"
@@ -239,12 +246,14 @@ def send_alert(chat_id, title, link, details=None):
     if summary:
         caption += f"📋 <b>Release Info:</b>\n<i>{summary}</i>\n\n"
 
+    # Build Interactive Buttons for Torbox Cloud Push
     inline_keyboard = []
     if magnets:
         caption += "🧲 <b>Magnets (Tap to Copy):</b>\n"
         for idx, m in enumerate(magnets[:3], 1):
             safe_label = html.escape(m["label"])
             caption += f"🔹 <b>{safe_label}:</b> <code>{m['url']}</code>\n"
+            # Cache button callback data (Telegram callback_data max 64 bytes)
             btn_key = f"tb_{int(time.time())}_{idx}_{random.randint(100, 999)}"
             CALLBACK_CACHE[btn_key] = m["url"]
             inline_keyboard.append([{"text": f"⚡ Add {safe_label[:20]} to TorBox", "callback_data": btn_key}])
@@ -294,69 +303,54 @@ def send_msg(chat_id, text):
         pass
 
 def scrape_discover_feed(domain, seen_posts):
-    new_items = []
+    discovered_topics = {}
     discover_url = f"{domain}/index.php?/discover/"
     try:
         r = cffi_requests.get(discover_url, impersonate="chrome120", timeout=15, headers=get_headers())
         if r.status_code == 200:
             soup = BeautifulSoup(r.text, "html.parser")
-            
-            stream_items = soup.find_all(["li", "div"], class_=lambda c: c and ("ipsStreamItem" in c or "cStreamItem" in c))
-            candidate_links = []
-            if stream_items:
-                for item in stream_items:
-                    a = item.find("a", href=lambda h: h and "/topic/" in h)
-                    if a:
-                        candidate_links.append(a)
-            else:
-                candidate_links = soup.find_all("a", href=lambda h: h and "/topic/" in h)
+            stream = soup.find("ol", class_="ipsStream") or soup
+            for li in stream.find_all("li", class_="ipsStreamItem"):
+                title_el = li.find("h2", class_="ipsStreamItem_title") or li.find("a", href=re.compile(r"/topic/"))
+                if not title_el:
+                    continue
+                a_tag = title_el.find("a") if title_el.name != "a" else title_el
+                if not a_tag or not a_tag.get("href"):
+                    continue
+                
+                href = a_tag["href"].strip()
+                # Clean comment params to get base topic
+                href = href.split("&do=findComment")[0].split("#")[0]
 
-            for a in candidate_links:
-                href = a.get("href", "")
                 m = re.search(r"/topic/(\d+)-", href)
-                if m and int(m.group(1)) > 10000:
-                    tid = str(m.group(1))
-                    if tid not in seen_posts and tid not in [x[2] for x in new_items]:
-                        full_url = clean_topic_url(href, domain)
-                        raw_title = a.get_text(strip=True)
-                        slug_title = extract_title_from_slug(full_url)
-                        title = slug_title if (slug_title and len(slug_title) > len(raw_title)) else raw_title
-                        if not title or len(title) < 4:
-                            title = slug_title or "1TamilMV Release"
-                        
-                        if "gdrive" in f"{title} {full_url}".lower():
-                            continue
+                if not m:
+                    continue
+                tid_int = int(m.group(1))
+                if tid_int < 10000:
+                    continue
+                tid = str(tid_int)
+                if tid in seen_posts:
+                    continue
 
-                        new_items.append((title, full_url, tid))
+                if tid not in discovered_topics:
+                    clean_url = clean_topic_url(href, domain)
+                    raw_title = a_tag.get_text(strip=True)
+                    slug_title = extract_title_from_slug(clean_url)
+                    title = slug_title if (slug_title and len(slug_title) > len(raw_title)) else raw_title
+                    if not title or len(title) < 4:
+                        title = slug_title or "1TamilMV Release"
+
+                    # Exclude topics that explicitly say 'gdrive' in title or url
+                    combined_check = f"{title} {clean_url}".lower()
+                    if "gdrive" in combined_check:
+                        continue
+
+                    discovered_topics[tid] = (title, clean_url, tid)
     except Exception as e:
         log_event("ERROR", f"Discover feed error: {e}")
 
-    # Fallback to homepage if discover feed returned 0 items
-    if not new_items:
-        try:
-            home_url = f"{domain}/"
-            r_home = cffi_requests.get(home_url, impersonate="chrome120", timeout=12, headers=get_headers())
-            if r_home.status_code == 200:
-                soup_home = BeautifulSoup(r_home.text, "html.parser")
-                for a in soup_home.find_all("a", href=re.compile(r"/topic/(\d+)-")):
-                    href = a.get("href", "")
-                    m = re.search(r"/topic/(\d+)-", href)
-                    if m and int(m.group(1)) > 10000:
-                        tid = str(m.group(1))
-                        if tid not in seen_posts and tid not in [x[2] for x in new_items]:
-                            full_url = clean_topic_url(href, domain)
-                            raw_title = a.get_text(strip=True)
-                            slug_title = extract_title_from_slug(full_url)
-                            title = slug_title if (slug_title and len(slug_title) > len(raw_title)) else raw_title
-                            if not title or len(title) < 4:
-                                title = slug_title or "1TamilMV Release"
-                            if "gdrive" in f"{title} {full_url}".lower():
-                                continue
-                            new_items.append((title, full_url, tid))
-        except Exception:
-            pass
-
-    return new_items
+    # Descending numeric Topic ID ensures newest releases first
+    return sorted(discovered_topics.values(), key=lambda x: int(x[2]), reverse=True)
 
 def main_loop(max_duration=19800):
     start_time = time.time()
@@ -366,7 +360,7 @@ def main_loop(max_duration=19800):
     last_scrape = 0
     scrape_interval = random.randint(300, 420)
 
-    log_event("START", f"Worker active in V2 stable mode. Domain: {domain}. Tracked: {len(seen_posts)}")
+    log_event("START", f"Production worker initialized on {domain}. Tracked: {len(seen_posts)}")
 
     while time.time() - start_time < max_duration:
         try:
@@ -379,6 +373,7 @@ def main_loop(max_duration=19800):
                 for u in updates:
                     offset = u["update_id"] + 1
                     
+                    # 1. Handle Callback Query from Inline Buttons ("Add to TorBox")
                     callback = u.get("callback_query")
                     if callback:
                         cb_id = callback.get("id")
@@ -397,6 +392,7 @@ def main_loop(max_duration=19800):
                             log_event("TORBOX", f"Button tapped: {ans_text}")
                         continue
 
+                    # 2. Handle Text Commands
                     msg = u.get("message", {})
                     text = msg.get("text", "").strip()
                     cid = str(msg.get("chat", {}).get("id", ""))
@@ -408,8 +404,7 @@ def main_loop(max_duration=19800):
                         log_event("SECURITY", f"Dropped message from {cid}")
                         continue
 
-                    raw_cmd = text.split()[0].lower()
-                    cmd = raw_cmd.split("@")[0]
+                    cmd = text.split()[0].lower()
                     log_event("COMMAND", f"Processing '{cmd}' from {cid}")
 
                     if cmd in ["/check", "/scan"]:
@@ -436,7 +431,7 @@ def main_loop(max_duration=19800):
                     elif cmd == "/status":
                         send_msg(cid, (
                             "━━━━━━━━━━━━━━━━━━━━━━\n"
-                            "🛡 <b>1TamilMV Live Status (V2 Stable)</b>\n"
+                            "🛡 <b>1TamilMV Live Status</b>\n"
                             "━━━━━━━━━━━━━━━━━━━━━━\n\n"
                             f"👤 <b>Access:</b> Locked to ID <code>{ALLOWED_CHAT_ID}</code>\n"
                             f"🌐 <b>Active Mirror:</b> {domain}\n"
@@ -444,29 +439,32 @@ def main_loop(max_duration=19800):
                             f"⚡ <b>TorBox Integration:</b> Active (Instant Cloud Push)\n"
                             f"🛡 <b>Duplicate Guard:</b> Strict Topic ID Filtering\n"
                             f"🕒 <b>Server Time:</b> <i>{get_now_ist_str()}</i>\n"
-                            f"⚡ <b>Mode:</b> 24/7 Unlimited (Instant < 1s)"
+                            f"⚡ <b>Latency:</b> Instant (< 1s)"
                         ))
 
                     elif cmd == "/ping":
                         send_msg(cid, f"🏓 <b>Pong!</b> Responsive as of <i>{get_now_ist_str()}</i>.")
 
                     elif cmd == "/latest":
-                        send_msg(cid, "🔍 <i>Fetching newest release from 1TamilMV...</i>")
+                        send_msg(cid, "🔍 <i>Fetching the newest torrent release on 1TamilMV...</i>")
                         try:
                             domain = get_active_domain()
-                            items = scrape_discover_feed(domain, set())
-                            found = False
-                            for t, l, tid in items[:6]:
-                                dt = extract_post_details(l, fallback_title=t)
-                                if dt and dt.get("magnets"):
-                                    send_alert(cid, t, l, dt)
-                                    seen_posts.add(tid)
-                                    save_seen_posts(seen_posts)
-                                    log_event("LATEST", f"Dispatched release {tid}: {t[:50]}")
-                                    found = True
-                                    break
-                            if not found:
+                            all_topics = scrape_discover_feed(domain, set())
+                            if not all_topics:
                                 send_msg(cid, "⚠️ Could not parse feed at this moment.")
+                            else:
+                                dispatched = False
+                                for t_title, t_link, t_tid in all_topics:
+                                    dt = extract_post_details(t_link, fallback_title=t_title)
+                                    if dt and dt.get("magnets"):
+                                        send_alert(cid, t_title, t_link, dt)
+                                        seen_posts.add(t_tid)
+                                        save_seen_posts(seen_posts)
+                                        log_event("LATEST", f"Dispatched release {t_tid}: {t_title[:50]}")
+                                        dispatched = True
+                                        break
+                                if not dispatched:
+                                    send_msg(cid, "ℹ️ No recent torrent-based releases found right now.")
                         except Exception as e:
                             send_msg(cid, f"⚠️ Error: {e}")
 
@@ -508,7 +506,7 @@ def main_loop(max_duration=19800):
                 domain = get_active_domain()
                 new_items = scrape_discover_feed(domain, seen_posts)
                 if new_items:
-                    log_event("AUTOSCAN", f"Found {len(new_items)} candidate release(s).")
+                    log_event("AUTOSCAN", f"Found {len(new_items)} new releases automatically.")
                     new_alerts = 0
                     for t, l, tid in reversed(new_items[:8]):
                         details = extract_post_details(l, fallback_title=t)
@@ -526,7 +524,7 @@ def main_loop(max_duration=19800):
         time.sleep(1)
 
     save_seen_posts(seen_posts)
-    log_event("CYCLE", f"5-hour runner cycle ended cleanly.")
+    log_event("CYCLE", "Worker cycle completed cleanly.")
 
 if __name__ == "__main__":
     main_loop()
