@@ -447,8 +447,17 @@ def main_loop(max_duration=19800):
                     elif cmd == "/latest":
                         send_msg(cid, "🔍 <i>Fetching the newest torrent release on 1TamilMV...</i>")
                         try:
-                            domain = get_active_domain()
-                            all_topics = scrape_discover_feed(domain, set())
+                            # Invalidate cached domain to force fresh check if needed
+                            curr_domain = get_active_domain()
+                            all_topics = scrape_discover_feed(curr_domain, set())
+                            if not all_topics:
+                                # Fallback retry once without cache
+                                log_event("LATEST", "Retrying feed scrape with fresh mirror resolution...")
+                                global CACHED_DOMAIN
+                                CACHED_DOMAIN = None
+                                curr_domain = get_active_domain()
+                                all_topics = scrape_discover_feed(curr_domain, set())
+
                             if not all_topics:
                                 send_msg(cid, "⚠️ Could not parse feed at this moment.")
                             else:
@@ -465,6 +474,7 @@ def main_loop(max_duration=19800):
                                 if not dispatched:
                                     send_msg(cid, "ℹ️ No recent torrent-based releases found right now.")
                         except Exception as e:
+                            log_event("LATEST_ERR", str(e))
                             send_msg(cid, f"⚠️ Error: {e}")
 
                     elif cmd == "/logs":
