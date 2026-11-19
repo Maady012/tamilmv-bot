@@ -1,0 +1,69 @@
+name: Deep Scraper Diagnostics
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Run Full Diagnostics
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python3 -c "
+          import poll_worker
+          from curl_cffi import requests as cffi_requests
+          from bs4 import BeautifulSoup
+          import re
+
+          print('=== 1. TESTING DOMAIN RESOLUTION ===')
+          d = poll_worker.get_active_domain()
+          print('Active domain returned:', d)
+
+          print('\n=== 2. RAW HTTP ON DISCOVER PAGE ===')
+          disc_url = f'{d}/index.php?/discover/'
+          r = cffi_requests.get(disc_url, impersonate='chrome120', timeout=15, headers=poll_worker.get_headers())
+          print('HTTP Status:', r.status_code)
+          print('Final redirected URL:', r.url)
+          print('Response HTML length:', len(r.text))
+          print('Contains cloudflare challenge?:', 'cf-browser-verification' in r.text or 'just a moment' in r.text.lower())
+          
+          soup = BeautifulSoup(r.text, 'html.parser')
+          stream = soup.find('ol', class_='ipsStream') or soup
+          items = stream.find_all('li', class_='ipsStreamItem')
+          print('Count of ipsStreamItem:', len(items))
+
+          print('\n=== 3. SCRAPE_DISCOVER_FEED OUTPUT ===')
+          topics = poll_worker.scrape_discover_feed(d, set())
+          print('Total topics parsed by scrape_discover_feed:', len(topics))
+          for t, l, tid in topics[:5]:
+              print(f'Topic ID {tid}: {t[:50]} -> {l}')
+
+          print('\n=== 4. TESTING EXTRACT_POST_DETAILS ON FIRST TOPIC ===')
+          if topics:
+              t, l, tid = topics[0]
+              dt = poll_worker.extract_post_details(l, fallback_title=t)
+              print('Extracted details:', dt is not None)
+              if dt:
+                  print('Title:', dt.get('title'))
+                  print('Image:', dt.get('image'))
+                  print('Summary:', dt.get('summary'))
+                  print('Magnets count:', len(dt.get('magnets', [])))
+                  for m in dt.get('magnets', []):
+                      print('  Magnet:', m.get('label'), '->', m.get('url')[:60])
+                  
+                  print('\n=== 5. DISPATCHING ALERT TO TELEGRAM ===')
+                  poll_worker.send_alert('${{ secrets.TELEGRAM_CHAT_ID }}', t, l, dt)
+                  print('send_alert executed!')
+          else:
+              print('No topics were parsed! Inspecting raw <a> tags with /topic/ in discover:')
+              for a in soup.find_all('a', href=re.compile(r'/topic/'))[:10]:
+                  print('  a tag:', a.get('href'), 'text:', a.get_text(strip=True)[:40])
+          "
