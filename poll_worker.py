@@ -106,6 +106,9 @@ def save_seen_posts(seen_set):
 def clean_topic_url(raw_url, domain):
     if raw_url.startswith("/"):
         raw_url = f"{domain}{raw_url}"
+    else:
+        # If the URL points to an older mirror, re-route it to the active live domain
+        raw_url = re.sub(r"https?://(?:www\.)?1tamilmv\.[a-z]+", domain, raw_url)
     raw_url = raw_url.split("&do=findComment")[0].split("#")[0]
     return raw_url
 
