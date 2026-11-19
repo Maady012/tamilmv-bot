@@ -1,0 +1,31 @@
+name: Test Alert Send
+on: workflow_dispatch
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - run: |
+          python3 -c "
+          from poll_worker import get_active_domain, scrape_discover_feed, extract_post_details, send_alert
+          import os
+
+          chat_id = '565062030'
+          domain = get_active_domain()
+          items = scrape_discover_feed(domain, set())
+          print('Found items:', len(items))
+          for t, l, tid in items:
+              dt = extract_post_details(l, fallback_title=t)
+              if dt and dt.get('magnets'):
+                  print('Sending test alert for:', tid, t)
+                  send_alert(chat_id, t, l, dt)
+                  break
+          "
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TORBOX_API_KEY: ${{ secrets.TORBOX_API_KEY }}
