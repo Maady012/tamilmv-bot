@@ -1,0 +1,26 @@
+name: Test Feed Item Structure
+on: workflow_dispatch
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - run: |
+          python3 -c "
+          from curl_cffi import requests as cffi_requests
+          from bs4 import BeautifulSoup
+          from poll_worker import get_headers
+
+          domain = 'https://www.1tamilmv.ceo'
+          r = cffi_requests.get(f'{domain}/index.php?/discover/', impersonate='chrome120', timeout=15, headers=get_headers())
+          soup = BeautifulSoup(r.text, 'html.parser')
+          stream = soup.find('ol', class_='ipsStream') or soup
+          for i, li in enumerate(stream.find_all('li', class_='ipsStreamItem')[:6]):
+              print(f'=== ITEM {i} ===')
+              for a in li.find_all('a', href=True):
+                  print('   -> text:', repr(a.get_text(strip=True)[:35]), 'href:', a['href'][:70])
+          "
