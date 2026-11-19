@@ -75,7 +75,7 @@ def get_active_domain():
             if res.status_code == 200 and "tamilmv" in res.text.lower():
                 CACHED_DOMAIN = res.url.rstrip("/")
                 LAST_DOMAIN_CHECK = now
-                log_event("DOMAIN", f"Active mirror resolved: {CACHED_DOMAIN}")
+                log_event("DOMAIN", f"Active mirror: {CACHED_DOMAIN}")
                 return CACHED_DOMAIN
         except Exception:
             continue
@@ -95,6 +95,13 @@ def save_seen_posts(seen_set):
     trimmed = list(str(x) for x in seen_set if str(x).isdigit())[-1000:]
     with open(STATE_FILE, "w") as f:
         json.dump(trimmed, f, indent=2)
+
+def clean_topic_url(raw_url, domain):
+    if raw_url.startswith("/"):
+        raw_url = f"{domain}{raw_url}"
+    # Strip reply/comment anchor tags
+    raw_url = raw_url.split("&do=findComment")[0].split("#")[0]
+    return raw_url
 
 def extract_title_from_slug(url):
     match = re.search(r"/topic/\d+-([^/?#&]+)", url)
@@ -119,13 +126,14 @@ def clean_magnet_label(label, fallback="Download Option"):
 def extract_post_details(topic_url, fallback_title=""):
     try:
         time.sleep(random.uniform(0.5, 1.2))
-        res = cffi_requests.get(topic_url, impersonate="chrome120", timeout=12, headers=get_headers())
+        clean_url = clean_topic_url(topic_url, get_active_domain())
+        res = cffi_requests.get(clean_url, impersonate="chrome120", timeout=12, headers=get_headers())
         if res.status_code != 200:
             return None
             
         soup = BeautifulSoup(res.text, "html.parser")
         
-        # 1. Clean Title
+        # 1. Title Extraction
         title = ""
         title_tag = soup.find("title")
         if title_tag:
@@ -142,7 +150,7 @@ def extract_post_details(topic_url, fallback_title=""):
             if h1:
                 title = h1.get_text(strip=True)
 
-        slug_t = extract_title_from_slug(topic_url)
+        slug_t = extract_title_from_slug(clean_url)
         if not title or title.startswith("[") or len(title) < 5:
             if slug_t:
                 title = f"{slug_t} {title}".strip()
@@ -199,8 +207,8 @@ def send_alert(chat_id, title, link, details=None):
     summary = html.escape(details.get("summary", "") if details else "")
     magnets = details.get("magnets", []) if details else []
     image_url = details.get("image") if details else None
+    clean_url = clean_topic_url(link, get_active_domain())
 
-    # Elegant, structured message card with bold headers & clean spacing
     caption = "━━━━━━━━━━━━━━━━━━━━━━\n"
     caption += f"🎬 <b>{d_title}</b>\n"
     caption += "━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -208,7 +216,6 @@ def send_alert(chat_id, title, link, details=None):
     if summary:
         caption += f"📋 <b>Release Info:</b>\n<i>{summary}</i>\n\n"
 
-    # Explicit handling for posts with and without magnets
     if magnets:
         caption += "🧲 <b>Magnets (Tap to Copy):</b>\n"
         for m in magnets[:3]:
@@ -218,10 +225,10 @@ def send_alert(chat_id, title, link, details=None):
     else:
         caption += "🧲 <b>Magnets:</b> <i>No magnet link available for this post</i>\n\n"
 
-    caption += f"🌐 <a href='{link}'><b>[View Full Topic on 1TamilMV]</b></a>"
+    caption += f"🌐 <a href='{clean_url}'><b>[View Full Topic on 1TamilMV]</b></a>"
 
     if len(caption) > 1000:
-        caption = caption[:940] + "...\n\n🌐 <a href='" + link + "'><b>[View on 1TamilMV]</b></a>"
+        caption = caption[:940] + "...\n\n🌐 <a href='" + clean_url + "'><b>[View on 1TamilMV]</b></a>"
 
     photo_sent = False
     if image_url:
@@ -259,27 +266,52 @@ def send_msg(chat_id, text):
         pass
 
 def scrape_discover_feed(domain, seen_posts):
+    """
+    STRICT NEW TOPIC CLASSIFIER:
+    Filters out all user replies, thank you comments, request replies, and bumps.
+    Only captures genuine, newly created release threads.
+    """
     new_items = []
     discover_url = f"{domain}/index.php?/discover/"
     try:
         r = cffi_requests.get(discover_url, impersonate="chrome120", timeout=15, headers=get_headers())
         if r.status_code == 200:
             soup = BeautifulSoup(r.text, "html.parser")
-            for a in soup.find_all("a", href=lambda h: h and "/topic/" in h):
-                href = a.get("href", "")
+            stream_items = soup.find_all(["li", "div"], class_=lambda c: c and ("ipsStreamItem" in c or "cStreamItem" in c))
+            
+            for item in stream_items:
+                item_text = item.get_text().lower()
+                
+                # Check 1: Exclude entries indicating comment/reply activity
+                if "replied to" in item_text or "commented on" in item_text or "posted a comment" in item_text:
+                    continue
+
+                title_a = item.find("a", href=lambda h: h and "/topic/" in h)
+                if not title_a:
+                    continue
+
+                href = title_a.get("href", "")
+                
+                # Check 2: Exclude comment redirect URLs
+                if "&do=findComment" in href or "comment=" in href:
+                    continue
+
+                raw_title = title_a.get_text(strip=True)
+                
+                # Check 3: Exclude reply count indicators like "3 replies"
+                if re.search(r"^\d+\s+repl(?:y|ies)", raw_title, re.IGNORECASE):
+                    continue
+
                 m = re.search(r"/topic/(\d+)-", href)
                 if m and int(m.group(1)) > 10000:
                     tid = str(m.group(1))
                     if tid not in seen_posts and tid not in [x[2] for x in new_items]:
-                        full_url = href.split("#")[0]
-                        if full_url.startswith("/"):
-                            full_url = f"{domain}{full_url}"
-                        raw_title = a.get_text(strip=True)
-                        slug_title = extract_title_from_slug(full_url)
+                        clean_url = clean_topic_url(href, domain)
+                        slug_title = extract_title_from_slug(clean_url)
                         title = slug_title if (slug_title and len(slug_title) > len(raw_title)) else raw_title
                         if not title or len(title) < 4:
                             title = slug_title or "1TamilMV Release"
-                        new_items.append((title, full_url, tid))
+                        new_items.append((title, clean_url, tid))
     except Exception as e:
         log_event("ERROR", f"Discover feed error: {e}")
 
@@ -293,7 +325,7 @@ def main_loop(max_duration=19800):
     last_scrape = 0
     scrape_interval = random.randint(300, 420)
 
-    log_event("START", f"Production worker initialized on {domain}")
+    log_event("START", f"Classifier worker active on {domain}. Tracked: {len(seen_posts)}")
 
     while time.time() - start_time < max_duration:
         try:
@@ -320,13 +352,13 @@ def main_loop(max_duration=19800):
                     log_event("COMMAND", f"Processing '{cmd}' from {cid}")
 
                     if cmd in ["/check", "/scan"]:
-                        send_msg(cid, "🔍 <i>Checking 1TamilMV discover feed for new releases...</i>")
+                        send_msg(cid, "🔍 <i>Checking for genuine newly created topics (ignoring comments)...</i>")
                         domain = get_active_domain()
                         items = scrape_discover_feed(domain, seen_posts)
                         if not items:
-                            send_msg(cid, "✅ <b>Up to date!</b> No new releases found since last scan.")
+                            send_msg(cid, "✅ <b>Up to date!</b> No new topic creations found since last scan.")
                         else:
-                            send_msg(cid, f"🎉 Found <b>{len(items)}</b> new release(s)!")
+                            send_msg(cid, f"🎉 Found <b>{len(items)}</b> genuine new release(s)!")
                             for t, l, tid in reversed(items[:8]):
                                 details = extract_post_details(l, fallback_title=t)
                                 if details:
@@ -341,17 +373,17 @@ def main_loop(max_duration=19800):
                             "━━━━━━━━━━━━━━━━━━━━━━\n\n"
                             f"👤 <b>Access:</b> Locked to ID <code>{ALLOWED_CHAT_ID}</code>\n"
                             f"🌐 <b>Active Mirror:</b> {domain}\n"
-                            f"📁 <b>Tracked:</b> <b>{len(seen_posts)}</b> posts recorded\n"
+                            f"📁 <b>Tracked Topics:</b> <b>{len(seen_posts)}</b> pure releases\n"
+                            f"🎯 <b>Filter:</b> Pure Topic Creations (Zero Comment Noise)\n"
                             f"🕒 <b>Server Time:</b> <i>{get_now_ist_str()}</i>\n"
-                            f"⚡ <b>Latency:</b> Instant (< 1s)\n"
-                            f"🔄 <b>Auto-Scan:</b> Randomized Jitter (5-7m)"
+                            f"⚡ <b>Latency:</b> Instant (< 1s)"
                         ))
 
                     elif cmd == "/ping":
                         send_msg(cid, f"🏓 <b>Pong!</b> Responsive as of <i>{get_now_ist_str()}</i>.")
 
                     elif cmd == "/latest":
-                        send_msg(cid, "🔍 <i>Fetching latest release card...</i>")
+                        send_msg(cid, "🔍 <i>Fetching the single newest topic creation...</i>")
                         try:
                             domain = get_active_domain()
                             items = scrape_discover_feed(domain, set())
@@ -360,7 +392,7 @@ def main_loop(max_duration=19800):
                                 dt = extract_post_details(l, fallback_title=t)
                                 if dt:
                                     send_alert(cid, t, l, dt)
-                                    log_event("LATEST", f"Served latest for Topic {tid}: {t[:50]}")
+                                    log_event("LATEST", f"Served pure topic {tid}: {t[:50]}")
                                     found_one = True
                                     break
                             if not found_one:
@@ -390,8 +422,8 @@ def main_loop(max_duration=19800):
                             "━━━━━━━━━━━━━━━━━━━━━━\n"
                             "🤖 <b>1TamilMV Notifier Commands</b>\n"
                             "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                            "👉 <b>/check</b> - Scan for new releases now\n"
-                            "👉 <b>/latest</b> - Preview latest release card\n"
+                            "👉 <b>/check</b> - Scan for pure new releases (no comment noise)\n"
+                            "👉 <b>/latest</b> - Preview the newest release\n"
                             "👉 <b>/status</b> - System health & mirror stats\n"
                             "👉 <b>/logs</b> - View recent event logs\n"
                             "👉 <b>/ping</b> - Test response speed"
@@ -406,7 +438,7 @@ def main_loop(max_duration=19800):
                 domain = get_active_domain()
                 new_items = scrape_discover_feed(domain, seen_posts)
                 if new_items:
-                    log_event("AUTOSCAN", f"Found {len(new_items)} new releases automatically.")
+                    log_event("AUTOSCAN", f"Found {len(new_items)} pure new releases automatically.")
                     for t, l, tid in reversed(new_items[:8]):
                         details = extract_post_details(l, fallback_title=t)
                         if details:
