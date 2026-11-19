@@ -299,13 +299,20 @@ def send_alert(chat_id, title, link, details=None):
 
 def send_msg(chat_id, text):
     try:
-        requests.post(
+        r = requests.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
             json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
             timeout=10
         )
-    except Exception:
-        pass
+        if r.status_code != 200:
+            log_event("WARN", f"send_msg HTML failed ({r.status_code}): {r.text[:100]}. Retrying as plain text.")
+            requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                json={"chat_id": chat_id, "text": text},
+                timeout=10
+            )
+    except Exception as e:
+        log_event("ERR", f"send_msg exception: {e}")
 
 def scrape_discover_feed(domain, seen_posts):
     discovered_topics = {}
@@ -445,7 +452,7 @@ def main_loop(max_duration=19800):
                             f"⚡ <b>TorBox Integration:</b> Active (Instant Cloud Push)\n"
                             f"🛡 <b>Duplicate Guard:</b> Strict Topic ID Filtering\n"
                             f"🕒 <b>Server Time:</b> <i>{get_now_ist_str()}</i>\n"
-                            f"⚡ <b>Latency:</b> Instant (< 1s)"
+                            f"⚡ <b>Latency:</b> Instant (&lt; 1s)"
                         ))
 
                     elif cmd == "/ping":
