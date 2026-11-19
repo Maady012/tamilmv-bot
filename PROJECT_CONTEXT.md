@@ -23,8 +23,8 @@
   1TamilMV's `/discover/` stream mixes new topics with comment replies and thread bumps (`&do=findComment`, `comment=...`). The scraper discards all comment-related items, strictly isolating **genuine original post creations**.
 - **GDrive Post Filter:**
   Topics that explicitly state `gdrive` in their title or URL are strictly excluded, as the bot is dedicated exclusively to torrent & TorBox-based releases.
-- **Torrent/Magnet Requirement:**
-  Only releases containing valid magnet links are broadcast. Posts without magnets are silently dropped to ensure 100% utility for TorBox.
+- **Torrent/Magnet Requirement & Delayed Magnet Handling:**
+  Only releases containing valid magnet links are broadcast. If an uploader creates a new thread before uploading the magnet, the topic ID is **kept pending** (not added to `seen_posts.json`). The bot will continuously re-check the post on subsequent scan intervals, and the moment the uploader edits the thread to add the magnet link, the release card and TorBox buttons are immediately dispatched and marked as seen.
 - **Chronological Topic ID Ordering:**
   Each release topic URL contains a unique numeric identifier (`/forums/topic/<topic_id>-<slug>/`).
   - Releases are sorted strictly in descending order of numeric Topic ID (`int(topic_id)`).

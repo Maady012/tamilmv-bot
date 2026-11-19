@@ -412,13 +412,19 @@ def main_loop(max_duration=19800):
                         if not items:
                             send_msg(cid, "✅ <b>Up to date!</b> No new releases found since last scan.")
                         else:
-                            send_msg(cid, f"🎉 Found <b>{len(items)}</b> genuine new release(s)!")
+                            new_alerts = 0
                             for t, l, tid in reversed(items[:8]):
                                 details = extract_post_details(l, fallback_title=t)
                                 if details and details.get("magnets"):
                                     send_alert(cid, t, l, details)
-                                seen_posts.add(tid)
-                            save_seen_posts(seen_posts)
+                                    seen_posts.add(tid)
+                                    new_alerts += 1
+                                else:
+                                    log_event("WAIT_MAGNET", f"Topic {tid} has no magnet yet. Kept pending.")
+                            if new_alerts > 0:
+                                save_seen_posts(seen_posts)
+                            else:
+                                send_msg(cid, "ℹ️ New posts found, but awaiting magnet link upload by uploader.")
 
                     elif cmd == "/status":
                         send_msg(cid, (
@@ -499,12 +505,17 @@ def main_loop(max_duration=19800):
                 new_items = scrape_discover_feed(domain, seen_posts)
                 if new_items:
                     log_event("AUTOSCAN", f"Found {len(new_items)} new releases automatically.")
+                    new_alerts = 0
                     for t, l, tid in reversed(new_items[:8]):
                         details = extract_post_details(l, fallback_title=t)
                         if details and details.get("magnets"):
                             send_alert(ALLOWED_CHAT_ID, t, l, details)
-                        seen_posts.add(tid)
-                    save_seen_posts(seen_posts)
+                            seen_posts.add(tid)
+                            new_alerts += 1
+                        else:
+                            log_event("WAIT_MAGNET", f"Topic {tid} has no magnet yet. Kept pending.")
+                    if new_alerts > 0:
+                        save_seen_posts(seen_posts)
             except Exception as e:
                 log_event("ERROR", f"Auto-scan exception: {e}")
 
