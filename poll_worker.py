@@ -423,7 +423,7 @@ def main_loop(max_duration=19800):
     seen_posts = load_seen_posts()
     domain = get_active_domain()
     offset = 0
-    scrape_interval = random.randint(300, 420)
+    scrape_interval = random.randint(45, 60)
     last_scrape = time.time() - scrape_interval + 5
 
     log_event("START", f"Production worker initialized on {domain}. Tracked: {len(seen_posts)}")
@@ -606,7 +606,7 @@ def main_loop(max_duration=19800):
 
         if time.time() - last_scrape > scrape_interval:
             last_scrape = time.time()
-            scrape_interval = random.randint(300, 420)
+            scrape_interval = random.randint(45, 60)
             try:
                 domain = get_active_domain()
                 new_items = scrape_discover_feed(domain, seen_posts)
@@ -627,8 +627,8 @@ def main_loop(max_duration=19800):
                     if new_alerts > 0:
                         save_seen_posts(seen_posts)
                 else:
+                    # Silent heartbeat in logs only - zero spam to user chat when no new posts exist
                     log_event("HEARTBEAT", f"Scan complete. Up to date ({len(seen_posts)} tracked).")
-                    send_msg(ALLOWED_CHAT_ID, f"🔄 <b>Auto-Check ({get_now_ist_str()}):</b> No new torrent releases found on 1TamilMV.")
             except Exception as e:
                 log_event("ERROR", f"Auto-scan exception: {e}")
 
