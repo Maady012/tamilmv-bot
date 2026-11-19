@@ -204,11 +204,27 @@ def extract_post_details(topic_url, fallback_title=""):
                     if not any(skip in line.lower() for skip in ["telegram channel", "click here", "audio credits", "official channel"]):
                         desc_lines.append(line)
 
+        # Check if this topic has external DDL (Direct Download Links) like Mega, MediaFire, GDrive, Terabox, etc.
+        ddl_domains = [
+            "drive.google", "mega.nz", "mediafire", "1fichier", "gdtot", "hubdrive",
+            "katdrive", "kolop", "filepress", "streamtape", "doodstream", "terabox",
+            "pixeldrain", "droplink", "fastforward", "rapidgator", "nitroflare",
+            "turbobit", "uptobox", "app.box.com", "dropbox.com", "send.cm"
+        ]
+        has_ddl = False
+        if post_content:
+            for a in post_content.find_all("a", href=True):
+                h = a["href"].lower()
+                if any(d in h for d in ddl_domains):
+                    has_ddl = True
+                    break
+
         return {
             "title": title,
             "image": image_url,
             "summary": "\n".join(desc_lines[:3]),
-            "magnets": magnets
+            "magnets": magnets,
+            "is_ddl": has_ddl
         }
     except Exception as e:
         log_event("EXTRACT_ERR", f"Error on {topic_url}: {e}")
@@ -462,6 +478,9 @@ def main_loop(max_duration=19800):
                                     send_alert(cid, t, l, details)
                                     seen_posts.add(tid)
                                     new_alerts += 1
+                                elif details and details.get("is_ddl"):
+                                    seen_posts.add(tid)
+                                    log_event("DROP_DDL", f"Topic {tid} is a Direct Download post. Discarded permanently.")
                                 else:
                                     log_event("WAIT_MAGNET", f"Topic {tid} has no magnet yet. Kept pending.")
                             if new_alerts > 0:
@@ -496,7 +515,7 @@ def main_loop(max_duration=19800):
                             else:
                                 dispatched = False
                                 pending_titles = []
-                                for t_title, t_link, t_tid in all_topics[:8]:
+                                for t_title, t_link, t_tid in all_topics[:10]:
                                     dt = extract_post_details(t_link, fallback_title=t_title)
                                     if dt and dt.get("magnets"):
                                         send_alert(cid, t_title, t_link, dt)
@@ -505,6 +524,10 @@ def main_loop(max_duration=19800):
                                         log_event("LATEST", f"Dispatched release {t_tid}: {t_title[:50]}")
                                         dispatched = True
                                         break
+                                    elif dt and dt.get("is_ddl"):
+                                        seen_posts.add(t_tid)
+                                        save_seen_posts(seen_posts)
+                                        log_event("DROP_DDL", f"Topic {t_tid} is a Direct Download post. Discarded.")
                                     else:
                                         clean_t = (dt.get("title") if dt and dt.get("title") else t_title).strip()
                                         pending_titles.append((clean_t, t_link))
@@ -572,6 +595,9 @@ def main_loop(max_duration=19800):
                             send_alert(ALLOWED_CHAT_ID, t, l, details)
                             seen_posts.add(tid)
                             new_alerts += 1
+                        elif details and details.get("is_ddl"):
+                            seen_posts.add(tid)
+                            log_event("DROP_DDL", f"Topic {tid} is a Direct Download post. Discarded permanently.")
                         else:
                             log_event("WAIT_MAGNET", f"Topic {tid} has no magnet yet. Kept pending.")
                     if new_alerts > 0:
