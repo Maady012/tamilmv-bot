@@ -164,11 +164,10 @@ def extract_post_details(topic_url, fallback_title=""):
         if not title:
             title = fallback_title or slug_t or "1TamilMV Release"
 
-        # 2. Content, Magnets & Torrent Attachments
+        # 2. Content & Magnets
         post_content = soup.find("div", {"data-role": "commentContent"}) or soup.find("div", class_="cPost_contentWrap")
         image_url, desc_lines = None, []
         magnets = []
-        torrent_files = []
 
         if post_content:
             for img in post_content.find_all("img"):
@@ -191,13 +190,6 @@ def extract_post_details(topic_url, fallback_title=""):
                         dn = parsed.get("dn", [""])[0]
                         label = clean_magnet_label(dn or raw_label, f"Option {len(magnets)+1}")
                         magnets.append({"url": href, "label": label})
-                # Torrent File Attachment
-                elif "/applications/core/interface/file/attachment.php" in href or ".torrent" in href:
-                    f_url = href if href.startswith("http") else f"{domain}{href}"
-                    f_label = a.get_text(strip=True) or f"Release_{len(torrent_files)+1}.torrent"
-                    if not f_label.endswith(".torrent"):
-                        f_label += ".torrent"
-                    torrent_files.append({"url": f_url, "filename": f_label})
 
             for line in post_content.get_text(separator="\n", strip=True).splitlines():
                 line = line.strip()
@@ -209,8 +201,7 @@ def extract_post_details(topic_url, fallback_title=""):
             "title": title,
             "image": image_url,
             "summary": "\n".join(desc_lines[:3]),
-            "magnets": magnets,
-            "torrent_files": torrent_files
+            "magnets": magnets
         }
     except Exception as e:
         log_event("EXTRACT_ERR", f"Error on {topic_url}: {e}")
@@ -238,7 +229,6 @@ def send_alert(chat_id, title, link, details=None):
     d_title = html.escape((details.get("title") if details and details.get("title") else title).strip())
     summary = html.escape(details.get("summary", "") if details else "")
     magnets = details.get("magnets", []) if details else []
-    torrent_files = details.get("torrent_files", []) if details else []
     image_url = details.get("image") if details else None
     clean_url = clean_topic_url(link, get_active_domain())
 
@@ -257,7 +247,7 @@ def send_alert(chat_id, title, link, details=None):
             safe_label = html.escape(m["label"])
             caption += f"🔹 <b>{safe_label}:</b> <code>{m['url']}</code>\n"
             # Cache button callback data (Telegram callback_data max 64 bytes)
-            btn_key = f"tb_{int(time.time())}_{idx}"
+            btn_key = f"tb_{int(time.time())}_{idx}_{random.randint(100, 999)}"
             CALLBACK_CACHE[btn_key] = m["url"]
             inline_keyboard.append([{"text": f"⚡ Add {safe_label[:20]} to TorBox", "callback_data": btn_key}])
         caption += "\n"
@@ -295,23 +285,6 @@ def send_alert(chat_id, title, link, details=None):
         except Exception:
             pass
 
-    # Send .torrent file attachment if available
-    if torrent_files:
-        for tf in torrent_files[:1]:  # Send primary .torrent file
-            try:
-                f_res = cffi_requests.get(tf["url"], impersonate="chrome120", timeout=12, headers=get_headers())
-                if f_res.status_code == 200 and len(f_res.content) > 100:
-                    files = {"document": (tf["filename"], f_res.content)}
-                    requests.post(
-                        f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument",
-                        data={"chat_id": chat_id, "caption": f"📎 <b>Torrent File:</b> <code>{html.escape(tf['filename'])}</code>", "parse_mode": "HTML"},
-                        files=files,
-                        timeout=12
-                    )
-                    log_event("TORRENT_FILE", f"Dispatched file {tf['filename']}")
-            except Exception as e:
-                log_event("TORRENT_ERR", f"Could not dispatch .torrent file: {e}")
-
 def send_msg(chat_id, text):
     try:
         requests.post(
@@ -329,8 +302,20 @@ def scrape_discover_feed(domain, seen_posts):
         r = cffi_requests.get(discover_url, impersonate="chrome120", timeout=15, headers=get_headers())
         if r.status_code == 200:
             soup = BeautifulSoup(r.text, "html.parser")
-            for a in soup.find_all("a", href=lambda h: h and "/topic/" in h):
-                href = a.get("href", "")
+            stream = soup.find("ol", class_="ipsStream") or soup
+            for li in stream.find_all("li", class_="ipsStreamItem"):
+                title_el = li.find("h2", class_="ipsStreamItem_title") or li.find("a", href=re.compile(r"/topic/"))
+                if not title_el:
+                    continue
+                a_tag = title_el.find("a") if title_el.name != "a" else title_el
+                if not a_tag or not a_tag.get("href"):
+                    continue
+                
+                href = a_tag["href"].strip()
+                # Strict Filter: Never track comment bumps or replies
+                if "do=findComment" in href or "comment=" in href:
+                    continue
+
                 m = re.search(r"/topic/(\d+)-", href)
                 if not m:
                     continue
@@ -340,9 +325,10 @@ def scrape_discover_feed(domain, seen_posts):
                 tid = str(tid_int)
                 if tid in seen_posts:
                     continue
+
                 if tid not in discovered_topics:
                     clean_url = clean_topic_url(href, domain)
-                    raw_title = a.get_text(strip=True)
+                    raw_title = a_tag.get_text(strip=True)
                     slug_title = extract_title_from_slug(clean_url)
                     title = slug_title if (slug_title and len(slug_title) > len(raw_title)) else raw_title
                     if not title or len(title) < 4:
@@ -351,6 +337,7 @@ def scrape_discover_feed(domain, seen_posts):
     except Exception as e:
         log_event("ERROR", f"Discover feed error: {e}")
 
+    # Descending numeric Topic ID ensures newest releases first
     return sorted(discovered_topics.values(), key=lambda x: int(x[2]), reverse=True)
 
 def main_loop(max_duration=19800):
@@ -432,7 +419,7 @@ def main_loop(max_duration=19800):
                             f"🌐 <b>Active Mirror:</b> {domain}\n"
                             f"📁 <b>Tracked Topics:</b> <b>{len(seen_posts)}</b> releases\n"
                             f"⚡ <b>TorBox Integration:</b> Active (Instant Cloud Push)\n"
-                            f"📎 <b>Torrent Dispatch:</b> Active (.torrent attachments)\n"
+                            f"🛡 <b>Duplicate Guard:</b> Strict Topic ID Filtering\n"
                             f"🕒 <b>Server Time:</b> <i>{get_now_ist_str()}</i>\n"
                             f"⚡ <b>Latency:</b> Instant (< 1s)"
                         ))

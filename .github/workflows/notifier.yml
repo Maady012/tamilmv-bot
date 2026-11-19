@@ -28,6 +28,7 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TORBOX_API_KEY: ${{ secrets.TORBOX_API_KEY }}
         run: python poll_worker.py
 
       - name: Commit State Changes
