@@ -278,19 +278,24 @@ def send_alert(chat_id, title, link, details=None):
             if r.status_code == 200:
                 photo_sent = True
                 log_event("NOTIFY", f"Photo alert sent: {d_title[:60]}")
-        except Exception:
-            pass
+            else:
+                log_event("WARN", f"sendPhoto returned {r.status_code}: {r.text[:100]}. Falling back to sendMessage.")
+        except Exception as e:
+            log_event("WARN", f"sendPhoto exception: {e}. Falling back to sendMessage.")
 
     if not photo_sent:
         try:
-            requests.post(
+            r = requests.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
                 json={"chat_id": chat_id, "text": caption, "parse_mode": "HTML", "disable_web_page_preview": True, "reply_markup": reply_markup},
                 timeout=10
             )
-            log_event("NOTIFY", f"Text alert sent: {d_title[:60]}")
-        except Exception:
-            pass
+            if r.status_code == 200:
+                log_event("NOTIFY", f"Text alert sent: {d_title[:60]}")
+            else:
+                log_event("ERR", f"sendMessage failed {r.status_code}: {r.text[:100]}")
+        except Exception as e:
+            log_event("ERR", f"sendMessage exception: {e}")
 
 def send_msg(chat_id, text):
     try:
@@ -455,7 +460,7 @@ def main_loop(max_duration=19800):
                                 send_msg(cid, "⚠️ Could not parse feed at this moment.")
                             else:
                                 dispatched = False
-                                for t_title, t_link, t_tid in all_topics:
+                                for t_title, t_link, t_tid in all_topics[:6]:
                                     dt = extract_post_details(t_link, fallback_title=t_title)
                                     if dt and dt.get("magnets"):
                                         send_alert(cid, t_title, t_link, dt)
@@ -465,7 +470,7 @@ def main_loop(max_duration=19800):
                                         dispatched = True
                                         break
                                 if not dispatched:
-                                    send_msg(cid, "ℹ️ No recent torrent-based releases found right now.")
+                                    send_msg(cid, "ℹ️ Checked newest releases, but uploaders have not added magnet links yet.")
                         except Exception as e:
                             send_msg(cid, f"⚠️ Error: {e}")
 
