@@ -75,7 +75,7 @@ def get_active_domain():
             if res.status_code == 200 and "tamilmv" in res.text.lower():
                 CACHED_DOMAIN = res.url.rstrip("/")
                 LAST_DOMAIN_CHECK = now
-                log_event("DOMAIN", f"Active mirror: {CACHED_DOMAIN}")
+                log_event("DOMAIN", f"Active mirror resolved: {CACHED_DOMAIN}")
                 return CACHED_DOMAIN
         except Exception:
             continue
@@ -95,12 +95,6 @@ def save_seen_posts(seen_set):
     trimmed = list(str(x) for x in seen_set if str(x).isdigit())[-1000:]
     with open(STATE_FILE, "w") as f:
         json.dump(trimmed, f, indent=2)
-
-def clean_topic_url(raw_url, domain):
-    if raw_url.startswith("/"):
-        raw_url = f"{domain}{raw_url}"
-    raw_url = raw_url.split("#")[0]
-    return raw_url
 
 def extract_title_from_slug(url):
     match = re.search(r"/topic/\d+-([^/?#&]+)", url)
@@ -261,27 +255,15 @@ def scrape_discover_feed(domain, seen_posts):
         r = cffi_requests.get(discover_url, impersonate="chrome120", timeout=15, headers=get_headers())
         if r.status_code == 200:
             soup = BeautifulSoup(r.text, "html.parser")
-            
-            stream_items = soup.find_all(["li", "div"], class_=lambda c: c and ("ipsStreamItem" in c or "cStreamItem" in c))
-            candidate_links = []
-            if stream_items:
-                for item in stream_items:
-                    a = item.find("a", href=lambda h: h and "/topic/" in h)
-                    if a:
-                        candidate_links.append(a)
-            else:
-                candidate_links = soup.find_all("a", href=lambda h: h and "/topic/" in h)
-
-            for a in candidate_links:
+            for a in soup.find_all("a", href=lambda h: h and "/topic/" in h):
                 href = a.get("href", "")
                 m = re.search(r"/topic/(\d+)-", href)
-                if m:
+                if m and int(m.group(1)) > 10000:
                     tid = str(m.group(1))
-                    # Skip old forum pinned placeholder IDs like 183
-                    if int(tid) < 10000:
-                        continue
                     if tid not in seen_posts and tid not in [x[2] for x in new_items]:
-                        full_url = clean_topic_url(href, domain)
+                        full_url = href.split("#")[0]
+                        if full_url.startswith("/"):
+                            full_url = f"{domain}{full_url}"
                         raw_title = a.get_text(strip=True)
                         slug_title = extract_title_from_slug(full_url)
                         title = slug_title if (slug_title and len(slug_title) > len(raw_title)) else raw_title
@@ -301,7 +283,7 @@ def main_loop(max_duration=19800):
     last_scrape = 0
     scrape_interval = random.randint(300, 420)
 
-    log_event("START", f"Worker initialized. Active domain: {domain}")
+    log_event("START", f"Production worker initialized on {domain}")
 
     while time.time() - start_time < max_duration:
         try:
@@ -335,12 +317,10 @@ def main_loop(max_duration=19800):
                             send_msg(cid, "✅ <b>Up to date!</b> No new releases found since last scan.")
                         else:
                             send_msg(cid, f"🎉 Found <b>{len(items)}</b> new release(s)!")
-                            sent_count = 0
                             for t, l, tid in reversed(items[:8]):
                                 details = extract_post_details(l, fallback_title=t)
                                 if details:
                                     send_alert(cid, t, l, details)
-                                    sent_count += 1
                                 seen_posts.add(tid)
                             save_seen_posts(seen_posts)
 
@@ -364,7 +344,6 @@ def main_loop(max_duration=19800):
                             domain = get_active_domain()
                             items = scrape_discover_feed(domain, set())
                             found_one = False
-                            # Walk through top items until a valid, active movie post is found
                             for t, l, tid in items[:5]:
                                 dt = extract_post_details(l, fallback_title=t)
                                 if dt:
