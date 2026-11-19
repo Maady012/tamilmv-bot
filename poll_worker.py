@@ -16,6 +16,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ALLOWED_CHAT_ID = str(os.getenv("TELEGRAM_CHAT_ID", "565062030")).strip()
+TORBOX_API_KEY = os.getenv("TORBOX_API_KEY", "").strip()
 STATE_FILE = "seen_posts.json"
 DEBUG_LOG_FILE = "bot_activity.log"
 
@@ -39,6 +40,7 @@ CANDIDATE_DOMAINS = [
 
 CACHED_DOMAIN = None
 LAST_DOMAIN_CHECK = 0
+CALLBACK_CACHE = {}  # In-memory map for inline buttons: button_id -> magnet_url
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -79,6 +81,10 @@ def get_active_domain():
                 return CACHED_DOMAIN
         except Exception:
             continue
+            
+    # Auto-Health Notification if all mirrors fail
+    log_event("HEALTH_ALERT", "All candidate mirrors failed responsiveness check")
+    send_msg(ALLOWED_CHAT_ID, "⚠️ <b>Health Alert:</b> All candidate mirrors are currently unreachable. Waiting for active domain redirect...")
     return CACHED_DOMAIN or "https://www.1tamilmv.io"
 
 def load_seen_posts():
@@ -112,20 +118,21 @@ def extract_title_from_slug(url):
             return clean
     return ""
 
-def clean_magnet_label(label, fallback="Download Option"):
+def clean_magnet_label(label, fallback="Option"):
     if not label:
         return fallback
     clean = re.sub(r"(?i)www\.1tamilmv\.\w+\s*-\s*", "", label)
     m = re.search(r"(\b(?:4K|2160p|1080p|720p|HDRip|BluRay|HEVC|AVC|x264|x265)\b.*)", clean, re.IGNORECASE)
     if m:
         short = m.group(1).strip(" -_")
-        return short[:32] if len(short) > 3 else clean[:32]
-    return clean[:32] if clean else fallback
+        return short[:30] if len(short) > 3 else clean[:30]
+    return clean[:30] if clean else fallback
 
 def extract_post_details(topic_url, fallback_title=""):
     try:
         time.sleep(random.uniform(0.5, 1.2))
-        clean_url = clean_topic_url(topic_url, get_active_domain())
+        domain = get_active_domain()
+        clean_url = clean_topic_url(topic_url, domain)
         res = cffi_requests.get(clean_url, impersonate="chrome120", timeout=12, headers=get_headers())
         if res.status_code != 200:
             return None
@@ -157,10 +164,11 @@ def extract_post_details(topic_url, fallback_title=""):
         if not title:
             title = fallback_title or slug_t or "1TamilMV Release"
 
-        # 2. Content & Magnets
+        # 2. Content, Magnets & Torrent Attachments
         post_content = soup.find("div", {"data-role": "commentContent"}) or soup.find("div", class_="cPost_contentWrap")
         image_url, desc_lines = None, []
         magnets = []
+        torrent_files = []
 
         if post_content:
             for img in post_content.find_all("img"):
@@ -172,6 +180,7 @@ def extract_post_details(topic_url, fallback_title=""):
             seen_hashes = set()
             for a in post_content.find_all("a", href=True):
                 href = a["href"].strip()
+                # Magnet Link
                 if href.startswith("magnet:?"):
                     hash_match = re.search(r"urn:btih:([a-zA-Z0-9]+)", href)
                     bt_hash = hash_match.group(1).lower() if hash_match else href
@@ -182,6 +191,13 @@ def extract_post_details(topic_url, fallback_title=""):
                         dn = parsed.get("dn", [""])[0]
                         label = clean_magnet_label(dn or raw_label, f"Option {len(magnets)+1}")
                         magnets.append({"url": href, "label": label})
+                # Torrent File Attachment
+                elif "/applications/core/interface/file/attachment.php" in href or ".torrent" in href:
+                    f_url = href if href.startswith("http") else f"{domain}{href}"
+                    f_label = a.get_text(strip=True) or f"Release_{len(torrent_files)+1}.torrent"
+                    if not f_label.endswith(".torrent"):
+                        f_label += ".torrent"
+                    torrent_files.append({"url": f_url, "filename": f_label})
 
             for line in post_content.get_text(separator="\n", strip=True).splitlines():
                 line = line.strip()
@@ -193,11 +209,28 @@ def extract_post_details(topic_url, fallback_title=""):
             "title": title,
             "image": image_url,
             "summary": "\n".join(desc_lines[:3]),
-            "magnets": magnets
+            "magnets": magnets,
+            "torrent_files": torrent_files
         }
     except Exception as e:
         log_event("EXTRACT_ERR", f"Error on {topic_url}: {e}")
         return None
+
+def add_to_torbox(magnet_url):
+    """Adds a magnet directly to your TorBox cloud."""
+    if not TORBOX_API_KEY:
+        return False, "TorBox API Key is not configured."
+    url = "https://api.torbox.app/v1/api/torrents/createtorrent"
+    headers = {"Authorization": f"Bearer {TORBOX_API_KEY}"}
+    data = {"magnet": magnet_url, "seed": 1}
+    try:
+        r = requests.post(url, headers=headers, data=data, timeout=12)
+        res = r.json()
+        if res.get("success"):
+            return True, res.get("detail", "Torrent queued on your TorBox Cloud!")
+        return False, res.get("detail", "TorBox API error.")
+    except Exception as e:
+        return False, str(e)
 
 def send_alert(chat_id, title, link, details=None):
     if not BOT_TOKEN or not chat_id:
@@ -205,6 +238,7 @@ def send_alert(chat_id, title, link, details=None):
     d_title = html.escape((details.get("title") if details and details.get("title") else title).strip())
     summary = html.escape(details.get("summary", "") if details else "")
     magnets = details.get("magnets", []) if details else []
+    torrent_files = details.get("torrent_files", []) if details else []
     image_url = details.get("image") if details else None
     clean_url = clean_topic_url(link, get_active_domain())
 
@@ -215,16 +249,23 @@ def send_alert(chat_id, title, link, details=None):
     if summary:
         caption += f"📋 <b>Release Info:</b>\n<i>{summary}</i>\n\n"
 
+    # Build Interactive Buttons for Torbox Cloud Push
+    inline_keyboard = []
     if magnets:
         caption += "🧲 <b>Magnets (Tap to Copy):</b>\n"
-        for m in magnets[:3]:
+        for idx, m in enumerate(magnets[:3], 1):
             safe_label = html.escape(m["label"])
             caption += f"🔹 <b>{safe_label}:</b> <code>{m['url']}</code>\n"
+            # Cache button callback data (Telegram callback_data max 64 bytes)
+            btn_key = f"tb_{int(time.time())}_{idx}"
+            CALLBACK_CACHE[btn_key] = m["url"]
+            inline_keyboard.append([{"text": f"⚡ Add {safe_label[:20]} to TorBox", "callback_data": btn_key}])
         caption += "\n"
     else:
         caption += "🧲 <b>Magnets:</b> <i>No magnet link available for this post</i>\n\n"
 
-    caption += f"🌐 <a href='{clean_url}'><b>[View Full Topic on 1TamilMV]</b></a>"
+    inline_keyboard.append([{"text": "🌐 Open on 1TamilMV", "url": clean_url}])
+    reply_markup = {"inline_keyboard": inline_keyboard}
 
     if len(caption) > 1000:
         caption = caption[:940] + "...\n\n🌐 <a href='" + clean_url + "'><b>[View on 1TamilMV]</b></a>"
@@ -234,7 +275,7 @@ def send_alert(chat_id, title, link, details=None):
         try:
             r = requests.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
-                json={"chat_id": chat_id, "photo": image_url, "caption": caption, "parse_mode": "HTML"},
+                json={"chat_id": chat_id, "photo": image_url, "caption": caption, "parse_mode": "HTML", "reply_markup": reply_markup},
                 timeout=10
             )
             if r.status_code == 200:
@@ -247,12 +288,29 @@ def send_alert(chat_id, title, link, details=None):
         try:
             requests.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                json={"chat_id": chat_id, "text": caption, "parse_mode": "HTML", "disable_web_page_preview": True},
+                json={"chat_id": chat_id, "text": caption, "parse_mode": "HTML", "disable_web_page_preview": True, "reply_markup": reply_markup},
                 timeout=10
             )
             log_event("NOTIFY", f"Text alert sent: {d_title[:60]}")
         except Exception:
             pass
+
+    # Send .torrent file attachment if available
+    if torrent_files:
+        for tf in torrent_files[:1]:  # Send primary .torrent file
+            try:
+                f_res = cffi_requests.get(tf["url"], impersonate="chrome120", timeout=12, headers=get_headers())
+                if f_res.status_code == 200 and len(f_res.content) > 100:
+                    files = {"document": (tf["filename"], f_res.content)}
+                    requests.post(
+                        f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument",
+                        data={"chat_id": chat_id, "caption": f"📎 <b>Torrent File:</b> <code>{html.escape(tf['filename'])}</code>", "parse_mode": "HTML"},
+                        files=files,
+                        timeout=12
+                    )
+                    log_event("TORRENT_FILE", f"Dispatched file {tf['filename']}")
+            except Exception as e:
+                log_event("TORRENT_ERR", f"Could not dispatch .torrent file: {e}")
 
 def send_msg(chat_id, text):
     try:
@@ -293,9 +351,7 @@ def scrape_discover_feed(domain, seen_posts):
     except Exception as e:
         log_event("ERROR", f"Discover feed error: {e}")
 
-    # Highest topic ID first
-    sorted_items = sorted(discovered_topics.values(), key=lambda x: int(x[2]), reverse=True)
-    return sorted_items
+    return sorted(discovered_topics.values(), key=lambda x: int(x[2]), reverse=True)
 
 def main_loop(max_duration=19800):
     start_time = time.time()
@@ -317,6 +373,27 @@ def main_loop(max_duration=19800):
                 updates = res.json().get("result", [])
                 for u in updates:
                     offset = u["update_id"] + 1
+                    
+                    # 1. Handle Callback Query from Inline Buttons ("Add to TorBox")
+                    callback = u.get("callback_query")
+                    if callback:
+                        cb_id = callback.get("id")
+                        cb_data = callback.get("data")
+                        cb_user = str(callback.get("from", {}).get("id"))
+                        
+                        if cb_user == ALLOWED_CHAT_ID and cb_data in CALLBACK_CACHE:
+                            magnet_to_send = CALLBACK_CACHE[cb_data]
+                            success, msg = add_to_torbox(magnet_to_send)
+                            ans_text = "✅ Added to your TorBox Cloud!" if success else f"⚠️ {msg}"
+                            requests.post(
+                                f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery",
+                                json={"callback_query_id": cb_id, "text": ans_text, "show_alert": True},
+                                timeout=5
+                            )
+                            log_event("TORBOX", f"Button tapped: {ans_text}")
+                        continue
+
+                    # 2. Handle Text Commands
                     msg = u.get("message", {})
                     text = msg.get("text", "").strip()
                     cid = str(msg.get("chat", {}).get("id", ""))
@@ -353,8 +430,9 @@ def main_loop(max_duration=19800):
                             "━━━━━━━━━━━━━━━━━━━━━━\n\n"
                             f"👤 <b>Access:</b> Locked to ID <code>{ALLOWED_CHAT_ID}</code>\n"
                             f"🌐 <b>Active Mirror:</b> {domain}\n"
-                            f"📁 <b>Tracked Topics:</b> <b>{len(seen_posts)}</b> pure releases\n"
-                            f"🎯 <b>Ordering:</b> Strict Numeric Topic ID (True Chronological)\n"
+                            f"📁 <b>Tracked Topics:</b> <b>{len(seen_posts)}</b> releases\n"
+                            f"⚡ <b>TorBox Integration:</b> Active (Instant Cloud Push)\n"
+                            f"📎 <b>Torrent Dispatch:</b> Active (.torrent attachments)\n"
                             f"🕒 <b>Server Time:</b> <i>{get_now_ist_str()}</i>\n"
                             f"⚡ <b>Latency:</b> Instant (< 1s)"
                         ))
@@ -366,13 +444,11 @@ def main_loop(max_duration=19800):
                         send_msg(cid, "🔍 <i>Checking discover feed for new release...</i>")
                         try:
                             domain = get_active_domain()
-                            # Get all topics without seen_posts filter to see the absolute latest
                             all_topics = scrape_discover_feed(domain, set())
                             if not all_topics:
                                 send_msg(cid, "⚠️ Could not parse feed at this moment.")
                             else:
                                 latest_title, latest_link, latest_tid = all_topics[0]
-                                # Check if this topic has already been sent to user
                                 if latest_tid in seen_posts:
                                     send_msg(cid, (
                                         "ℹ️ <b>No newer releases!</b>\n\n"
@@ -414,7 +490,7 @@ def main_loop(max_duration=19800):
                             "━━━━━━━━━━━━━━━━━━━━━━\n\n"
                             "👉 <b>/check</b> - Scan for new releases now\n"
                             "👉 <b>/latest</b> - Preview the newest release\n"
-                            "👉 <b>/status</b> - System health & mirror stats\n"
+                            "👉 <b>/status</b> - System health & TorBox status\n"
                             "👉 <b>/logs</b> - View recent event logs\n"
                             "👉 <b>/ping</b> - Test response speed"
                         ))
