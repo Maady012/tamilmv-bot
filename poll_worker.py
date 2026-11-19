@@ -28,6 +28,7 @@ USER_AGENTS = [
 ]
 
 CANDIDATE_DOMAINS = [
+    "https://www.1tamilmv.ceo",
     "https://www.1tamilmv.io",
     "https://www.1tamilmv.fi",
     "https://www.1tamilmv.pm",
@@ -316,10 +317,6 @@ def scrape_discover_feed(domain, seen_posts):
                     continue
                 
                 href = a_tag["href"].strip()
-                # Strict Filter: Never track comment bumps or replies
-                if "do=findComment" in href or "comment=" in href:
-                    continue
-
                 m = re.search(r"/topic/(\d+)-", href)
                 if not m:
                     continue
