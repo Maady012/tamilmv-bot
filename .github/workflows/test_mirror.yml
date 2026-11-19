@@ -1,4 +1,4 @@
-name: Test Mirror Redirect Correct
+name: Test Mirror Redirect Fixed
 on: workflow_dispatch
 jobs:
   test:
@@ -23,7 +23,8 @@ jobs:
           for d in test_domains:
               try:
                   r = cffi_requests.get(d, impersonate='chrome120', timeout=8, allow_redirects=True, verify=False)
-                  print(f'{d} -> Final URL: {r.url}, Status: {r.status_code}, Found: {bool("tamilmv" in r.text.lower())}')
+                  has_kw = 'tamilmv' in r.text.lower()
+                  print(f'{d} -> Final URL: {r.url}, Status: {r.status_code}, Found: {has_kw}')
               except Exception as e:
                   print(f'{d} -> Err: {e}')
           "
