@@ -239,34 +239,38 @@ def send_alert(chat_id, title, link, details=None):
     image_url = details.get("image") if details else None
     clean_url = clean_topic_url(link, get_active_domain())
 
+    # Build clean concise caption (under Telegram 1024 char photo limit)
     caption = "━━━━━━━━━━━━━━━━━━━━━━\n"
-    caption += f"🎬 <b>{d_title}</b>\n"
+    caption += f"🎬 <b>{d_title[:180]}</b>\n"
     caption += "━━━━━━━━━━━━━━━━━━━━━━\n\n"
 
     if summary:
-        caption += f"📋 <b>Release Info:</b>\n<i>{summary}</i>\n\n"
+        # Keep brief summary lines to leave plenty of room
+        sum_brief = "\n".join(summary.splitlines()[:2])
+        caption += f"📋 <b>Release Info:</b>\n<i>{sum_brief[:250]}</i>\n\n"
 
-    # Build Interactive Buttons for Torbox Cloud Push
+    # Build Interactive Buttons: 1-Tap Copy & 1-Tap TorBox Cloud Push
     inline_keyboard = []
     if magnets:
-        caption += "🧲 <b>Magnets (Tap to Copy):</b>\n"
+        caption += "🧲 <b>Magnets Available:</b>\n"
         for idx, m in enumerate(magnets[:3], 1):
             safe_label = html.escape(m["label"])
-            caption += f"🔹 <b>{safe_label}:</b> <code>{m['url']}</code>\n"
-            # Cache button callback data (Telegram callback_data max 64 bytes)
-            btn_key = f"tb_{int(time.time())}_{idx}_{random.randint(100, 999)}"
-            CALLBACK_CACHE[btn_key] = m["url"]
-            inline_keyboard.append([{"text": f"⚡ Add {safe_label[:20]} to TorBox", "callback_data": btn_key}])
-        caption += "\n"
+            caption += f"🔹 {safe_label}\n"
+            # Keys for TorBox and Get Magnet
+            tb_key = f"tb_{int(time.time())}_{idx}_{random.randint(100, 999)}"
+            mag_key = f"gm_{int(time.time())}_{idx}_{random.randint(100, 999)}"
+            CALLBACK_CACHE[tb_key] = ("torbox", m["url"], safe_label)
+            CALLBACK_CACHE[mag_key] = ("magnet", m["url"], safe_label)
+            inline_keyboard.append([
+                {"text": f"🧲 Copy {safe_label[:14]}", "callback_data": mag_key},
+                {"text": f"⚡ TorBox", "callback_data": tb_key}
+            ])
+        caption += "\n<i>(Tap button below to get copyable magnet or push to cloud)</i>\n"
     else:
-        caption += "🧲 <b>Magnets:</b> <i>No magnet link available for this post</i>\n\n"
+        caption += "🧲 <b>Magnets:</b> <i>Awaiting magnet upload</i>\n\n"
 
     inline_keyboard.append([{"text": "🌐 Open on 1TamilMV", "url": clean_url}])
     reply_markup = {"inline_keyboard": inline_keyboard}
-
-    # Never arbitrarily slice HTML formatted strings which breaks <code> tags
-    if len(caption) > 3800:
-        caption = caption[:3600] + "...\n\n🌐 <a href='" + clean_url + "'><b>[View on 1TamilMV]</b></a>"
 
     photo_sent = False
     if image_url:
@@ -401,15 +405,31 @@ def main_loop(max_duration=19800):
                         cb_user = str(callback.get("from", {}).get("id"))
                         
                         if cb_user == ALLOWED_CHAT_ID and cb_data in CALLBACK_CACHE:
-                            magnet_to_send = CALLBACK_CACHE[cb_data]
-                            success, msg = add_to_torbox(magnet_to_send)
-                            ans_text = "✅ Added to your TorBox Cloud!" if success else f"⚠️ {msg}"
-                            requests.post(
-                                f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery",
-                                json={"callback_query_id": cb_id, "text": ans_text, "show_alert": True},
-                                timeout=5
-                            )
-                            log_event("TORBOX", f"Button tapped: {ans_text}")
+                            item = CALLBACK_CACHE[cb_data]
+                            # Backward-compatible tuple check
+                            action = item[0] if isinstance(item, tuple) else "torbox"
+                            mag_url = item[1] if isinstance(item, tuple) else item
+                            lbl = item[2] if isinstance(item, tuple) else "Magnet"
+                            
+                            if action == "magnet":
+                                # Answer toast
+                                requests.post(
+                                    f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery",
+                                    json={"callback_query_id": cb_id, "text": "✅ Magnet sent below!"},
+                                    timeout=5
+                                )
+                                # Send pure copyable code block to chat
+                                send_msg(cb_user, f"🧲 <b>{html.escape(lbl)} Magnet (Tap to Copy):</b>\n<code>{mag_url}</code>")
+                                log_event("MAGNET", f"Delivered copyable magnet for {lbl}")
+                            else:
+                                success, msg = add_to_torbox(mag_url)
+                                ans_text = "✅ Added to your TorBox Cloud!" if success else f"⚠️ {msg}"
+                                requests.post(
+                                    f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery",
+                                    json={"callback_query_id": cb_id, "text": ans_text, "show_alert": True},
+                                    timeout=5
+                                )
+                                log_event("TORBOX", f"Button tapped: {ans_text}")
                         continue
 
                     # 2. Handle Text Commands
