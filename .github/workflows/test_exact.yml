@@ -1,0 +1,38 @@
+name: Test Scraper Real
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Run Test
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TORBOX_API_KEY: ${{ secrets.TORBOX_API_KEY }}
+        run: |
+          python3 -c "
+          import poll_worker
+          print('Resolving domain...')
+          d = poll_worker.get_active_domain(force_refresh=True)
+          print('Resolved domain:', d)
+          print('Scraping feed...')
+          topics = poll_worker.scrape_discover_feed(d, set())
+          print('Found topics count:', len(topics))
+          for t, l, tid in topics[:5]:
+              print('Topic:', tid, t[:40], l)
+              dt = poll_worker.extract_post_details(l, fallback_title=t)
+              if dt:
+                  print('  Magnets:', len(dt.get('magnets', [])))
+                  if dt.get('magnets'):
+                      print('  Sending alert...')
+                      poll_worker.send_alert('${{ secrets.TELEGRAM_CHAT_ID }}', t, l, dt)
+                      print('  Alert sent successfully!')
+                      break
+          "

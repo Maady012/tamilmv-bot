@@ -66,10 +66,10 @@ def get_headers():
         "Upgrade-Insecure-Requests": "1",
     }
 
-def get_active_domain():
+def get_active_domain(force_refresh=False):
     global CACHED_DOMAIN, LAST_DOMAIN_CHECK
     now = time.time()
-    if CACHED_DOMAIN and (now - LAST_DOMAIN_CHECK < 1800):
+    if not force_refresh and CACHED_DOMAIN and (now - LAST_DOMAIN_CHECK < 1800):
         return CACHED_DOMAIN
 
     for base_url in CANDIDATE_DOMAINS:
@@ -83,10 +83,8 @@ def get_active_domain():
         except Exception:
             continue
             
-    # Auto-Health Notification if all mirrors fail
     log_event("HEALTH_ALERT", "All candidate mirrors failed responsiveness check")
-    send_msg(ALLOWED_CHAT_ID, "⚠️ <b>Health Alert:</b> All candidate mirrors are currently unreachable. Waiting for active domain redirect...")
-    return CACHED_DOMAIN or "https://www.1tamilmv.io"
+    return CACHED_DOMAIN or "https://www.1tamilmv.ceo"
 
 def load_seen_posts():
     if os.path.exists(STATE_FILE):
@@ -107,7 +105,6 @@ def clean_topic_url(raw_url, domain):
     if raw_url.startswith("/"):
         raw_url = f"{domain}{raw_url}"
     else:
-        # If the URL points to an older mirror, re-route it to the active live domain
         raw_url = re.sub(r"https?://(?:www\.)?1tamilmv\.[a-z]+", domain, raw_url)
     raw_url = raw_url.split("&do=findComment")[0].split("#")[0]
     return raw_url
@@ -134,7 +131,7 @@ def clean_magnet_label(label, fallback="Option"):
 
 def extract_post_details(topic_url, fallback_title=""):
     try:
-        time.sleep(random.uniform(0.5, 1.2))
+        time.sleep(random.uniform(0.3, 0.8))
         domain = get_active_domain()
         clean_url = clean_topic_url(topic_url, domain)
         res = cffi_requests.get(clean_url, impersonate="chrome120", timeout=12, headers=get_headers())
@@ -187,7 +184,6 @@ def extract_post_details(topic_url, fallback_title=""):
             seen_hashes = set()
             for a in post_content.find_all("a", href=True):
                 href = a["href"].strip()
-                # Magnet Link
                 if href.startswith("magnet:?"):
                     hash_match = re.search(r"urn:btih:([a-zA-Z0-9]+)", href)
                     bt_hash = hash_match.group(1).lower() if hash_match else href
@@ -247,14 +243,12 @@ def send_alert(chat_id, title, link, details=None):
     if summary:
         caption += f"📋 <b>Release Info:</b>\n<i>{summary}</i>\n\n"
 
-    # Build Interactive Buttons for Torbox Cloud Push
     inline_keyboard = []
     if magnets:
         caption += "🧲 <b>Magnets (Tap to Copy):</b>\n"
         for idx, m in enumerate(magnets[:3], 1):
             safe_label = html.escape(m["label"])
             caption += f"🔹 <b>{safe_label}:</b> <code>{m['url']}</code>\n"
-            # Cache button callback data (Telegram callback_data max 64 bytes)
             btn_key = f"tb_{int(time.time())}_{idx}_{random.randint(100, 999)}"
             CALLBACK_CACHE[btn_key] = m["url"]
             inline_keyboard.append([{"text": f"⚡ Add {safe_label[:20]} to TorBox", "callback_data": btn_key}])
@@ -305,20 +299,24 @@ def send_msg(chat_id, text):
 
 def scrape_discover_feed(domain, seen_posts):
     discovered_topics = {}
-    discover_url = f"{domain}/index.php?/discover/"
-    try:
-        r = cffi_requests.get(discover_url, impersonate="chrome120", timeout=15, headers=get_headers())
-        if r.status_code == 200:
-            soup = BeautifulSoup(r.text, "html.parser")
-            stream = soup.find("ol", class_="ipsStream") or soup
-            for li in stream.find_all("li", class_="ipsStreamItem"):
-                title_el = li.find("h2", class_="ipsStreamItem_title") or li.find("a", href=re.compile(r"/topic/"))
-                if not title_el:
-                    continue
-                a_tag = title_el.find("a") if title_el.name != "a" else title_el
-                if not a_tag or not a_tag.get("href"):
-                    continue
+    
+    # 1. Primary: Discover Feed
+    urls_to_try = [
+        f"{domain}/index.php?/discover/",
+        f"{domain}/discover/",
+        f"{domain}/"  # Fallback to homepage
+    ]
+    
+    for url in urls_to_try:
+        try:
+            r = cffi_requests.get(url, impersonate="chrome120", timeout=12, headers=get_headers())
+            if r.status_code != 200:
+                continue
                 
+            soup = BeautifulSoup(r.text, "html.parser")
+            
+            # Find topic anchors across both stream and forum layouts
+            for a_tag in soup.find_all("a", href=re.compile(r"/topic/(\d+)-")):
                 href = a_tag["href"].strip()
                 m = re.search(r"/topic/(\d+)-", href)
                 if not m:
@@ -338,14 +336,16 @@ def scrape_discover_feed(domain, seen_posts):
                     if not title or len(title) < 4:
                         title = slug_title or "1TamilMV Release"
 
-                    # Exclude topics that explicitly say 'gdrive' in title or url
                     combined_check = f"{title} {clean_url}".lower()
                     if "gdrive" in combined_check:
                         continue
 
                     discovered_topics[tid] = (title, clean_url, tid)
-    except Exception as e:
-        log_event("ERROR", f"Discover feed error: {e}")
+                    
+            if discovered_topics:
+                break
+        except Exception as e:
+            log_event("ERROR", f"Scrape attempt error on {url}: {e}")
 
     # Descending numeric Topic ID ensures newest releases first
     return sorted(discovered_topics.values(), key=lambda x: int(x[2]), reverse=True)
@@ -447,19 +447,20 @@ def main_loop(max_duration=19800):
                     elif cmd == "/latest":
                         send_msg(cid, "🔍 <i>Fetching the newest torrent release on 1TamilMV...</i>")
                         try:
-                            # Invalidate cached domain to force fresh check if needed
-                            curr_domain = get_active_domain()
+                            curr_domain = get_active_domain(force_refresh=True)
                             all_topics = scrape_discover_feed(curr_domain, set())
+                            
+                            # Fallback candidate mirrors if needed
                             if not all_topics:
-                                # Fallback retry once without cache
-                                log_event("LATEST", "Retrying feed scrape with fresh mirror resolution...")
-                                global CACHED_DOMAIN
-                                CACHED_DOMAIN = None
-                                curr_domain = get_active_domain()
-                                all_topics = scrape_discover_feed(curr_domain, set())
+                                for cand in CANDIDATE_DOMAINS:
+                                    if cand != curr_domain:
+                                        all_topics = scrape_discover_feed(cand, set())
+                                        if all_topics:
+                                            curr_domain = cand
+                                            break
 
                             if not all_topics:
-                                send_msg(cid, "⚠️ Could not parse feed at this moment.")
+                                send_msg(cid, "⚠️ <b>Could not parse feed at this moment.</b>\n<i>Retrying candidate mirrors automatically.</i>")
                             else:
                                 dispatched = False
                                 for t_title, t_link, t_tid in all_topics:
@@ -472,7 +473,7 @@ def main_loop(max_duration=19800):
                                         dispatched = True
                                         break
                                 if not dispatched:
-                                    send_msg(cid, "ℹ️ No recent torrent-based releases found right now.")
+                                    send_msg(cid, "ℹ️ No recent torrent-based releases with magnets found right now.")
                         except Exception as e:
                             log_event("LATEST_ERR", str(e))
                             send_msg(cid, f"⚠️ Error: {e}")
