@@ -1,0 +1,22 @@
+name: Test Feed Run Direct
+on: workflow_dispatch
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - run: |
+          python3 -c "
+          from poll_worker import get_active_domain, scrape_discover_feed
+
+          domain = get_active_domain()
+          print('Active domain:', domain)
+          items = scrape_discover_feed(domain, set())
+          print('Items returned count:', len(items))
+          for t, l, tid in items[:5]:
+              print(f'TID {tid}: {t[:40]} | {l}')
+          "
