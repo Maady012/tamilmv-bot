@@ -1,52 +1,67 @@
-# Project Blueprint: 1TamilMV Telegram Stealth Notifier
+# Project Blueprint & Complete System Architecture: 1TamilMV Telegram Stealth Notifier
 
 **Owner:** Maady012  
-**Telegram Chat ID:** 565062030  
-**Bot Username:** @Maddy_Brain_bot  
+**Telegram Chat ID:** `565062030` (Strictly private; all other user IDs are silently dropped)  
+**Bot Username:** `@Maddy_Brain_bot`  
 **GitHub Repository:** [github.com/Maady012/tamilmv-bot](https://github.com/Maady012/tamilmv-bot)  
 **Local Workspace Path:** `/data/data/com.termux/files/home/tamilmv-bot`  
+**Persistent Local Anchor:** `/data/data/com.termux/files/home/.agy_context_1tamilmv.md`  
+**Last Updated:** November 19, 2026  
 
 ---
 
-## 1. System Architecture
-- **Hosting Engine:** GitHub Actions Cloud Runner (`ubuntu-latest`) running 24/7 continuous cycles.
-- **Scraping Engine:** `curl_cffi` using Chrome 120 browser TLS fingerprint impersonation to bypass Cloudflare.
-- **Target Feed:** `https://www.1tamilmv.io/index.php?/discover/` (Live stream items).
-- **Domain Resolver:** Automatic probing across candidate mirrors (`.io`, `.fi`, `.pm`, `.dad`, `.app`, `.biz`, `.yt`, `.wf`) with automatic redirect following.
-- **Deduplication Engine:** Numeric Forum Topic IDs (`topic/<id>-<slug>`) stored and updated in `seen_posts.json`. Prevents duplicate alerts even across mirror flips.
+## 1. System Architecture & Cloud Infrastructure
+- **100% Cloud-Hosted (Zero Local Termux Resource Burden):** Runs autonomously on GitHub Actions Cloud Runner (`ubuntu-latest`) via `.github/workflows/notifier.yml` without burning local phone battery or process limits.
+- **Bypassing Anti-Bot & Cloudflare:** Built using `curl_cffi` with Chrome 120 browser TLS fingerprint impersonation (`impersonate="chrome120"`).
+- **Candidate Domain Auto-Resolution:** Dynamically cycles through candidate mirrors (`.io`, `.fi`, `.pm`, `.dad`, `.app`, `.biz`, `.yt`, `.wf`), tracks redirects, and uses cached responsive domains.
+- **Mirror Health Alerts:** Automatically notifies Telegram Chat `565062030` if all candidate domains become unresponsive.
 
 ---
 
-## 2. Interactive Telegram Commands
-- `/check` or `/scan` — Scans the discover stream immediately for new releases.
-- `/latest` — Previews the latest post; includes smart caching so identical previews aren't repeatedly spammed.
-- `/status` — Displays active domain mirror, count of tracked IDs, and system health.
-- `/logs` — Displays the last 12 timestamped event logs for in-chat debugging.
+## 2. Scraping & Strict Original Post Logic
+- **Comment Bump & Reply Discarder:** 
+  1TamilMV's `/discover/` stream mixes new topics with comment replies and thread bumps (`&do=findComment`, `comment=...`). The scraper discards all comment-related items, strictly isolating **genuine original post creations**.
+- **Chronological Topic ID Ordering:**
+  Each release topic URL contains a unique numeric identifier (`/forums/topic/<topic_id>-<slug>/`).
+  - Releases are sorted strictly in descending order of numeric Topic ID (`int(topic_id)`).
+  - Pinned legacy threads (Topic ID < 10000, like `183-0`) are ignored.
+- **Duplicate Prevention:**
+  - Sent topic IDs are persisted in `seen_posts.json` and automatically synchronized/committed back to GitHub.
+  - Releases already sent are never re-alerted, preventing repeated notifications.
+
+---
+
+## 3. Telegram Release Card Formatting
+- **Card Presentation:** Clean, single-message layout:
+  - Poster image preview (`sendPhoto` with HTML fallback).
+  - Cleaned movie/series release title.
+  - Release specifications (Audio formats, bitrate, resolutions).
+  - 1-Tap Copy Magnets using code blocks (`<code>magnet:?xt=...</code>`) to avoid Telegram hyperlink stripping.
+  - Interactive Inline Button: **⚡ Add [Quality] to TorBox** for 1-click cloud push.
+  - Direct forum link button: `🌐 Open on 1TamilMV`.
+- **Torrent File Attachment Policy:**
+  - Separate `.torrent` attachment dispatches are intentionally disabled to eliminate unrelated attachment noise.
+
+---
+
+## 4. TorBox Cloud Integration
+- **API Endpoint:** `https://api.torbox.app/v1/api/torrents/createtorrent`
+- **Authentication:** `TORBOX_API_KEY` stored securely in GitHub Action Secrets.
+- **Callback Routing:** Because Telegram `callback_data` has a strict 64-byte limit, buttons use an in-memory button key cache (`CALLBACK_CACHE[btn_key] = magnet_url`). When tapped, the worker pushes the magnet directly to your TorBox subscription and confirms with a Telegram alert popup (`✅ Added to your TorBox Cloud!`).
+
+---
+
+## 5. Telegram Commands
+- `/check` or `/scan` — Manually forces an immediate scan of the feed for newly created releases.
+- `/latest` — Immediately fetches and previews the newest original release card with 1-tap magnets and TorBox buttons.
+- `/status` — Displays active domain mirror, count of tracked IDs, and duplicate guard status.
+- `/logs` — Displays the last 12 timestamped event logs in an HTML `<pre>` block for easy in-chat debugging.
 - `/ping` — Verifies latency and connectivity.
 
 ---
 
-## 3. Security & Stealth Hardening
-- **Strict Single-User Access:** Hardcoded filter for Chat ID `565062030`. Any message from other users is silently dropped.
-- **Anti-Blocking Jitter:** Dynamic randomized delays (5–7 minutes) and humanized pauses (1.0s–2.5s) between requests.
-- **Secrets Management:** `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` stored securely in GitHub Action Secrets.
-
----
-
-## 4. Key Files in Repository
-- `poll_worker.py`: Main continuous polling worker script with real-time command processing and discover feed scraping.
-- `.github/workflows/notifier.yml`: GitHub Actions automated workflow for continuous cloud execution.
-- `requirements.txt`: Python dependencies (`curl_cffi`, `beautifulsoup4`, `requests`).
-- `seen_posts.json`: Persistent history of dispatched topic IDs.
-- `bot_activity.log`: Timestamped activity and debug event log.
-
----
-
-## 5. Version 2.0 & 2.1 Enhancements (Multi-Magnet, TorBox & Torrent Dispatch)
-- **Multi-Resolution Parser:** Automatically discovers and isolates each distinct magnet link per release.
-- **Label Formatting:** Cleans raw forum titles down to exact qualities (e.g. `1080p (2.4 GB)`, `720p (1.4 GB)`, `450MB Rip`).
-- **Telegram Caption Safety:** Limits output to a maximum of 6 primary download options to avoid breaching the Telegram 1024-character caption limit.
-- **1-Click TorBox Cloud Integration:** Adds interactive inline buttons (`⚡ Add [Quality] to TorBox`) to automatically push magnets directly to your TorBox cloud subscription (`https://api.torbox.app/v1/api/torrents/createtorrent`).
-- **Direct `.torrent` Attachment Dispatch:** Parses raw `.torrent` file attachment URLs from 1TamilMV release topics and dispatches them directly into your Telegram chat via `sendDocument`.
-- **Automated Mirror Health Alert:** If all candidate mirrors are temporarily unreachable, an immediate health notification alert is dispatched to your private chat.
-- **GitHub Action Quota Safety:** Stays well within the 2,000 monthly free minute budget with automated memory recycling.
+## 6. Secrets & Security Configuration
+The following secrets are configured in GitHub Actions (`Settings > Secrets and variables > Actions`):
+- `TELEGRAM_BOT_TOKEN`: Token for `@Maddy_Brain_bot`.
+- `TELEGRAM_CHAT_ID`: `565062030`.
+- `TORBOX_API_KEY`: API key for TorBox cloud torrent adding.
