@@ -42,8 +42,11 @@
 
 ---
 
-## 5. Version 2.0 Enhancements (Multi-Magnet Architecture)
+## 5. Version 2.0 & 2.1 Enhancements (Multi-Magnet, TorBox & Torrent Dispatch)
 - **Multi-Resolution Parser:** Automatically discovers and isolates each distinct magnet link per release.
 - **Label Formatting:** Cleans raw forum titles down to exact qualities (e.g. `1080p (2.4 GB)`, `720p (1.4 GB)`, `450MB Rip`).
 - **Telegram Caption Safety:** Limits output to a maximum of 6 primary download options to avoid breaching the Telegram 1024-character caption limit.
+- **1-Click TorBox Cloud Integration:** Adds interactive inline buttons (`⚡ Add [Quality] to TorBox`) to automatically push magnets directly to your TorBox cloud subscription (`https://api.torbox.app/v1/api/torrents/createtorrent`).
+- **Direct `.torrent` Attachment Dispatch:** Parses raw `.torrent` file attachment URLs from 1TamilMV release topics and dispatches them directly into your Telegram chat via `sendDocument`.
+- **Automated Mirror Health Alert:** If all candidate mirrors are temporarily unreachable, an immediate health notification alert is dispatched to your private chat.
 - **GitHub Action Quota Safety:** Stays well within the 2,000 monthly free minute budget with automated memory recycling.
