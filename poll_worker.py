@@ -403,8 +403,8 @@ def main_loop(max_duration=19800):
     seen_posts = load_seen_posts()
     domain = get_active_domain()
     offset = 0
-    last_scrape = time.time() - scrape_interval + 5
     scrape_interval = random.randint(300, 420)
+    last_scrape = time.time() - scrape_interval + 5
 
     log_event("START", f"Production worker initialized on {domain}. Tracked: {len(seen_posts)}")
 
