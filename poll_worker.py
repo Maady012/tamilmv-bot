@@ -295,6 +295,7 @@ def send_alert(chat_id, title, link, details=None):
 
     photo_sent = False
     if image_url:
+        # First attempt: Pass image_url directly
         try:
             r = requests.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
@@ -304,10 +305,29 @@ def send_alert(chat_id, title, link, details=None):
             if r.status_code == 200:
                 photo_sent = True
                 log_event("NOTIFY", f"Photo alert sent: {d_title[:60]}")
-            else:
-                log_event("WARN", f"sendPhoto returned {r.status_code}: {r.text[:100]}. Falling back to sendMessage.")
-        except Exception as e:
-            log_event("WARN", f"sendPhoto exception: {e}. Falling back to sendMessage.")
+        except Exception:
+            pass
+
+        # Second attempt: If Telegram failed to fetch image host, download image via Chrome impersonation and upload bytes directly
+        if not photo_sent:
+            try:
+                img_res = cffi_requests.get(image_url, impersonate="chrome120", timeout=10, headers=get_headers())
+                if img_res.status_code == 200 and len(img_res.content) > 1000:
+                    files = {"photo": ("poster.jpg", img_res.content, "image/jpeg")}
+                    data = {"chat_id": chat_id, "caption": caption, "parse_mode": "HTML", "reply_markup": json.dumps(reply_markup)}
+                    r2 = requests.post(
+                        f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
+                        data=data,
+                        files=files,
+                        timeout=15
+                    )
+                    if r2.status_code == 200:
+                        photo_sent = True
+                        log_event("NOTIFY", f"Photo uploaded & sent: {d_title[:60]}")
+                    else:
+                        log_event("WARN", f"sendPhoto upload failed: {r2.status_code} {r2.text[:80]}")
+            except Exception as ex:
+                log_event("WARN", f"Image download exception: {ex}")
 
     if not photo_sent:
         try:
