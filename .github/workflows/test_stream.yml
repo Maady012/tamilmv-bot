@@ -1,0 +1,42 @@
+name: Test Feed Stream Items
+on: workflow_dispatch
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - run: |
+          python3 -c "
+          from curl_cffi import requests as cffi_requests
+          from bs4 import BeautifulSoup
+          import re
+          from poll_worker import get_active_domain
+
+          domain = get_active_domain()
+          r = cffi_requests.get(f'{domain}/index.php?/discover/', impersonate='chrome120', timeout=15)
+          soup = BeautifulSoup(r.text, 'html.parser')
+
+          stream = soup.find('ol', class_='ipsStream') or soup
+          for li in stream.find_all('li', class_='ipsStreamItem'):
+              title_el = li.find('h2', class_='ipsStreamItem_title') or li.find('a', href=re.compile(r'/topic/'))
+              if not title_el:
+                  continue
+              a_tag = title_el.find('a') if title_el.name != 'a' else title_el
+              if not a_tag or not a_tag.get('href'):
+                  continue
+              href = a_tag['href']
+              text = a_tag.get_text(strip=True)
+              
+              # Check all indicators of comment/reply vs new topic
+              meta = li.find('ul', class_='ipsStreamItem_meta') or li.find('p', class_='ipsStreamItem_status')
+              meta_txt = meta.get_text(' ', strip=True) if meta else ''
+              
+              action = li.find('span', class_='ipsStreamItem_contentType')
+              action_txt = action.get_text(strip=True) if action else ''
+              
+              print(f'HREF: {href[:60]} | TITLE: {text[:35]} | ACTION: {action_txt} | META: {meta_txt[:50]}')
+          "
