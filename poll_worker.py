@@ -39,6 +39,7 @@ CANDIDATE_DOMAINS = [
 
 CACHED_DOMAIN = None
 LAST_DOMAIN_CHECK = 0
+LAST_SERVED_LATEST_ID = None
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -75,7 +76,7 @@ def get_active_domain():
             if res.status_code == 200 and "tamilmv" in res.text.lower():
                 CACHED_DOMAIN = res.url.rstrip("/")
                 LAST_DOMAIN_CHECK = now
-                log_event("DOMAIN", f"Active mirror: {CACHED_DOMAIN}")
+                log_event("DOMAIN", f"Active mirror resolved: {CACHED_DOMAIN}")
                 return CACHED_DOMAIN
         except Exception:
             continue
@@ -99,7 +100,6 @@ def save_seen_posts(seen_set):
 def clean_topic_url(raw_url, domain):
     if raw_url.startswith("/"):
         raw_url = f"{domain}{raw_url}"
-    # Strip reply/comment anchor tags
     raw_url = raw_url.split("&do=findComment")[0].split("#")[0]
     return raw_url
 
@@ -133,7 +133,7 @@ def extract_post_details(topic_url, fallback_title=""):
             
         soup = BeautifulSoup(res.text, "html.parser")
         
-        # 1. Title Extraction
+        # 1. Clean Title
         title = ""
         title_tag = soup.find("title")
         if title_tag:
@@ -266,11 +266,6 @@ def send_msg(chat_id, text):
         pass
 
 def scrape_discover_feed(domain, seen_posts):
-    """
-    STRICT NEW TOPIC CLASSIFIER:
-    Filters out all user replies, thank you comments, request replies, and bumps.
-    Only captures genuine, newly created release threads.
-    """
     new_items = []
     discover_url = f"{domain}/index.php?/discover/"
     try:
@@ -282,7 +277,7 @@ def scrape_discover_feed(domain, seen_posts):
             for item in stream_items:
                 item_text = item.get_text().lower()
                 
-                # Check 1: Exclude entries indicating comment/reply activity
+                # Drop comment/reply noise
                 if "replied to" in item_text or "commented on" in item_text or "posted a comment" in item_text:
                     continue
 
@@ -291,14 +286,10 @@ def scrape_discover_feed(domain, seen_posts):
                     continue
 
                 href = title_a.get("href", "")
-                
-                # Check 2: Exclude comment redirect URLs
                 if "&do=findComment" in href or "comment=" in href:
                     continue
 
                 raw_title = title_a.get_text(strip=True)
-                
-                # Check 3: Exclude reply count indicators like "3 replies"
                 if re.search(r"^\d+\s+repl(?:y|ies)", raw_title, re.IGNORECASE):
                     continue
 
@@ -318,6 +309,7 @@ def scrape_discover_feed(domain, seen_posts):
     return new_items
 
 def main_loop(max_duration=19800):
+    global LAST_SERVED_LATEST_ID
     start_time = time.time()
     seen_posts = load_seen_posts()
     domain = get_active_domain()
@@ -356,7 +348,7 @@ def main_loop(max_duration=19800):
                         domain = get_active_domain()
                         items = scrape_discover_feed(domain, seen_posts)
                         if not items:
-                            send_msg(cid, "✅ <b>Up to date!</b> No new topic creations found since last scan.")
+                            send_msg(cid, "✅ <b>Up to date!</b> No new releases found since last scan.")
                         else:
                             send_msg(cid, f"🎉 Found <b>{len(items)}</b> genuine new release(s)!")
                             for t, l, tid in reversed(items[:8]):
@@ -383,18 +375,25 @@ def main_loop(max_duration=19800):
                         send_msg(cid, f"🏓 <b>Pong!</b> Responsive as of <i>{get_now_ist_str()}</i>.")
 
                     elif cmd == "/latest":
-                        send_msg(cid, "🔍 <i>Fetching the single newest topic creation...</i>")
+                        send_msg(cid, "🔍 <i>Checking discover feed for new release...</i>")
                         try:
                             domain = get_active_domain()
                             items = scrape_discover_feed(domain, set())
                             found_one = False
                             for t, l, tid in items[:5]:
-                                dt = extract_post_details(l, fallback_title=t)
-                                if dt:
-                                    send_alert(cid, t, l, dt)
-                                    log_event("LATEST", f"Served pure topic {tid}: {t[:50]}")
+                                if tid == LAST_SERVED_LATEST_ID:
+                                    send_msg(cid, f"ℹ️ <b>No newer release since your last check!</b>\n\nThe newest topic on 1TamilMV is still:\n📌 <b>{html.escape(t)}</b>")
+                                    log_event("LATEST", f"Repeated /latest for topic {tid}, informed user.")
                                     found_one = True
                                     break
+                                else:
+                                    dt = extract_post_details(l, fallback_title=t)
+                                    if dt:
+                                        send_alert(cid, t, l, dt)
+                                        LAST_SERVED_LATEST_ID = tid
+                                        log_event("LATEST", f"Served pure topic {tid}: {t[:50]}")
+                                        found_one = True
+                                        break
                             if not found_one:
                                 send_msg(cid, "⚠️ Could not parse latest topic details at this moment.")
                         except Exception as e:
@@ -422,7 +421,7 @@ def main_loop(max_duration=19800):
                             "━━━━━━━━━━━━━━━━━━━━━━\n"
                             "🤖 <b>1TamilMV Notifier Commands</b>\n"
                             "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                            "👉 <b>/check</b> - Scan for pure new releases (no comment noise)\n"
+                            "👉 <b>/check</b> - Scan for new releases now\n"
                             "👉 <b>/latest</b> - Preview the newest release\n"
                             "👉 <b>/status</b> - System health & mirror stats\n"
                             "👉 <b>/logs</b> - View recent event logs\n"
