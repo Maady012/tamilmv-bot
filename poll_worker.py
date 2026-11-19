@@ -367,7 +367,7 @@ def main_loop(max_duration=19800):
             upd_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?timeout=2"
             if offset:
                 upd_url += f"&offset={offset}"
-            res = requests.get(upd_url, timeout=5)
+            res = requests.get(upd_url, timeout=10)
             if res.status_code == 200:
                 updates = res.json().get("result", [])
                 for u in updates:
