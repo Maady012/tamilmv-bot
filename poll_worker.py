@@ -39,10 +39,8 @@ CANDIDATE_DOMAINS = [
 
 CACHED_DOMAIN = None
 LAST_DOMAIN_CHECK = 0
-# Track the ID of the latest post served via /latest in this session
 LAST_SERVED_PREVIEW_ID = None
 
-# IST Timezone (UTC + 5:30)
 IST = timezone(timedelta(hours=5, minutes=30))
 
 def get_now_ist_str():
@@ -115,15 +113,27 @@ def extract_title_from_slug(url):
             return clean
     return ""
 
+def clean_magnet_label(label, fallback="Magnet Link"):
+    """Extracts resolution or quality tags for clean display in Telegram."""
+    if not label:
+        return fallback
+    clean = re.sub(r"(?i)www\.1tamilmv\.\w+\s*-\s*", "", label)
+    # Highlight quality like 1080p, 720p, 4K, 2.4GB, HEVC
+    m = re.search(r"(\b(?:4K|2160p|1080p|720p|HDRip|BluRay|HEVC|AVC|x264|x265)\b.*)", clean, re.IGNORECASE)
+    if m:
+        short = m.group(1).strip(" -_")
+        return short[:40] if len(short) > 3 else clean[:40]
+    return clean[:40] if clean else fallback
+
 def extract_post_details(topic_url, fallback_title=""):
     try:
         time.sleep(random.uniform(1.0, 2.0))
         res = cffi_requests.get(topic_url, impersonate="chrome120", timeout=12, headers=get_headers())
         if res.status_code != 200:
-            return {"title": fallback_title or extract_title_from_slug(topic_url), "image": None, "summary": "", "magnet": None}
+            return {"title": fallback_title or extract_title_from_slug(topic_url), "image": None, "summary": "", "magnets": []}
         soup = BeautifulSoup(res.text, "html.parser")
         
-        # 1. Title Extraction
+        # 1. Clean Title
         title = ""
         title_tag = soup.find("title")
         if title_tag:
@@ -146,9 +156,10 @@ def extract_post_details(topic_url, fallback_title=""):
         if not title:
             title = fallback_title or slug_t or "1TamilMV Release"
 
-        # 2. Content
+        # 2. Content & Magnets
         post_content = soup.find("div", {"data-role": "commentContent"}) or soup.find("div", class_="cPost_contentWrap")
-        image_url, desc_lines, magnet_link = None, [], None
+        image_url, desc_lines = None, []
+        magnets = []
 
         if post_content:
             for img in post_content.find_all("img"):
@@ -157,10 +168,20 @@ def extract_post_details(topic_url, fallback_title=""):
                     image_url = src
                     break
             
+            # Extract all distinct magnet links
+            seen_hashes = set()
             for a in post_content.find_all("a", href=True):
-                if a["href"].startswith("magnet:?"):
-                    magnet_link = a["href"]
-                    break
+                href = a["href"].strip()
+                if href.startswith("magnet:?"):
+                    hash_match = re.search(r"urn:btih:([a-zA-Z0-9]+)", href)
+                    bt_hash = hash_match.group(1).lower() if hash_match else href
+                    if bt_hash not in seen_hashes:
+                        seen_hashes.add(bt_hash)
+                        raw_label = a.get_text(strip=True)
+                        parsed = urllib.parse.parse_qs(urllib.parse.urlparse(href).query)
+                        dn = parsed.get("dn", [""])[0]
+                        label = clean_magnet_label(dn or raw_label, f"Download Option {len(magnets)+1}")
+                        magnets.append({"url": href, "label": label})
 
             for line in post_content.get_text(separator="\n", strip=True).splitlines():
                 line = line.strip()
@@ -171,24 +192,30 @@ def extract_post_details(topic_url, fallback_title=""):
             "title": title,
             "image": image_url,
             "summary": "\n".join(desc_lines[:6]),
-            "magnet": magnet_link
+            "magnets": magnets
         }
     except Exception as e:
-        return {"title": fallback_title or extract_title_from_slug(topic_url), "image": None, "summary": "", "magnet": None}
+        return {"title": fallback_title or extract_title_from_slug(topic_url), "image": None, "summary": "", "magnets": []}
 
 def send_alert(chat_id, title, link, details=None):
     if not BOT_TOKEN or not chat_id:
         return
     d_title = html.escape((details.get("title") if details and details.get("title") else title).strip())
     summary = html.escape(details.get("summary", "") if details else "")
-    magnet = details.get("magnet") if details else None
+    magnets = details.get("magnets", []) if details else []
     image_url = details.get("image") if details else None
 
     caption = f"🎬 <b>{d_title}</b>\n\n"
     if summary:
         caption += f"📋 <i>{summary}</i>\n\n"
-    if magnet:
-        caption += f"🧲 <a href='{magnet}'><b>Copy Magnet Link</b></a>\n\n"
+    
+    if magnets:
+        caption += "🧲 <b>Direct Magnet Links:</b>\n"
+        for idx, m in enumerate(magnets[:6], 1):  # Limit to 6 to stay well inside caption limits
+            safe_label = html.escape(m["label"])
+            caption += f"• <a href='{m['url']}'><b>{safe_label}</b></a>\n"
+        caption += "\n"
+
     caption += f"🔗 <a href='{link}'>Open on 1TamilMV</a>"
 
     if len(caption) > 1000:
@@ -272,7 +299,7 @@ def main_loop(max_duration=19800):
     last_scrape = 0
     scrape_interval = random.randint(300, 420)
 
-    log_event("START", f"Worker initialized on {domain}. Tracked posts: {len(seen_posts)}")
+    log_event("START", f"Worker active with multi-magnet engine. Domain: {domain}")
 
     while time.time() - start_time < max_duration:
         try:
@@ -291,7 +318,6 @@ def main_loop(max_duration=19800):
                     if not text or not cid:
                         continue
 
-                    # STRICT SINGLE-USER LOCKDOWN
                     if cid != ALLOWED_CHAT_ID:
                         log_event("SECURITY", f"Blocked unauthorized message from {cid}")
                         continue
@@ -350,7 +376,6 @@ def main_loop(max_duration=19800):
                             send_msg(cid, f"⚠️ Error: {e}")
 
                     elif cmd == "/logs":
-                        # Send last 10 log entries directly to Telegram for easy debugging
                         try:
                             if os.path.exists(DEBUG_LOG_FILE):
                                 with open(DEBUG_LOG_FILE, "r", encoding="utf-8") as f:
@@ -366,9 +391,9 @@ def main_loop(max_duration=19800):
                         send_msg(cid, (
                             "🤖 <b>Private 1TamilMV Notifier:</b>\n\n"
                             "👉 /check - Scan for new releases now\n"
-                            "👉 /latest - Preview the latest upload (won't repeat unnecessarily)\n"
+                            "👉 /latest - Preview latest release (with direct magnet links)\n"
                             "👉 /status - Check system status & mirror\n"
-                            "👉 /logs - View live timestamped event logs for debugging\n"
+                            "👉 /logs - View live timestamped event logs\n"
                             "👉 /ping - Test response speed"
                         ))
         except Exception:
@@ -394,7 +419,7 @@ def main_loop(max_duration=19800):
         time.sleep(1)
 
     save_seen_posts(seen_posts)
-    log_event("CYCLE", "5-hour worker cycle ended cleanly.")
+    log_event("CYCLE", "Worker cycle ended cleanly.")
 
 if __name__ == "__main__":
     main_loop()
