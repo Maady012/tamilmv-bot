@@ -17,7 +17,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ALLOWED_CHAT_ID = str(os.getenv("TELEGRAM_CHAT_ID", "565062030")).strip()
 STATE_FILE = "seen_posts.json"
-LATEST_PREVIEW_FILE = "last_previewed_id.txt"
 DEBUG_LOG_FILE = "bot_activity.log"
 
 USER_AGENTS = [
@@ -54,22 +53,6 @@ def log_event(event_type, details):
     except Exception:
         pass
     logging.info(f"[{event_type}] {details}")
-
-def get_last_previewed_id():
-    if os.path.exists(LATEST_PREVIEW_FILE):
-        try:
-            with open(LATEST_PREVIEW_FILE, "r") as f:
-                return f.read().strip()
-        except Exception:
-            pass
-    return None
-
-def set_last_previewed_id(tid):
-    try:
-        with open(LATEST_PREVIEW_FILE, "w") as f:
-            f.write(str(tid).strip())
-    except Exception:
-        pass
 
 def get_headers():
     return {
@@ -282,11 +265,6 @@ def send_msg(chat_id, text):
         pass
 
 def scrape_discover_feed(domain, seen_posts):
-    """
-    Scrapes releases and orders by HIGHEST numeric Topic ID.
-    Higher Topic ID = newly created post. 
-    Completely eliminates comment bumps.
-    """
     discovered_topics = {}
     discover_url = f"{domain}/index.php?/discover/"
     try:
@@ -299,7 +277,7 @@ def scrape_discover_feed(domain, seen_posts):
                 if not m:
                     continue
                 tid_int = int(m.group(1))
-                if tid_int < 10000:  # Skip system placeholders
+                if tid_int < 10000:
                     continue
                 tid = str(tid_int)
                 if tid in seen_posts:
@@ -315,7 +293,7 @@ def scrape_discover_feed(domain, seen_posts):
     except Exception as e:
         log_event("ERROR", f"Discover feed error: {e}")
 
-    # Sort strictly descending by Topic ID (newest post creations first)
+    # Highest topic ID first
     sorted_items = sorted(discovered_topics.values(), key=lambda x: int(x[2]), reverse=True)
     return sorted_items
 
@@ -388,25 +366,27 @@ def main_loop(max_duration=19800):
                         send_msg(cid, "🔍 <i>Checking discover feed for new release...</i>")
                         try:
                             domain = get_active_domain()
-                            items = scrape_discover_feed(domain, set())
-                            found_one = False
-                            last_preview_id = get_last_previewed_id()
-                            for t, l, tid in items[:5]:
-                                if str(tid) == str(last_preview_id):
-                                    send_msg(cid, f"ℹ️ <b>No newer release since your last check!</b>\n\nThe newest topic on 1TamilMV is still:\n📌 <b>{html.escape(t)}</b>")
-                                    log_event("LATEST", f"Repeated /latest for topic {tid}, informed user.")
-                                    found_one = True
-                                    break
+                            # Get all topics without seen_posts filter to see the absolute latest
+                            all_topics = scrape_discover_feed(domain, set())
+                            if not all_topics:
+                                send_msg(cid, "⚠️ Could not parse feed at this moment.")
+                            else:
+                                latest_title, latest_link, latest_tid = all_topics[0]
+                                # Check if this topic has already been sent to user
+                                if latest_tid in seen_posts:
+                                    send_msg(cid, (
+                                        "ℹ️ <b>No newer releases!</b>\n\n"
+                                        f"The newest topic on 1TamilMV has already been shared:\n"
+                                        f"📌 <b>{html.escape(latest_title)}</b>"
+                                    ))
+                                    log_event("LATEST", f"Already shared topic {latest_tid}, notified user.")
                                 else:
-                                    dt = extract_post_details(l, fallback_title=t)
+                                    dt = extract_post_details(latest_link, fallback_title=latest_title)
                                     if dt:
-                                        send_alert(cid, t, l, dt)
-                                        set_last_previewed_id(tid)
-                                        log_event("LATEST", f"Served pure topic {tid}: {t[:50]}")
-                                        found_one = True
-                                        break
-                            if not found_one:
-                                send_msg(cid, "⚠️ Could not parse latest topic details at this moment.")
+                                        send_alert(cid, latest_title, latest_link, dt)
+                                        seen_posts.add(latest_tid)
+                                        save_seen_posts(seen_posts)
+                                        log_event("LATEST", f"Dispatched new release {latest_tid}: {latest_title[:50]}")
                         except Exception as e:
                             send_msg(cid, f"⚠️ Error: {e}")
 
