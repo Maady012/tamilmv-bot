@@ -1,0 +1,29 @@
+name: Debug Runner State
+on:
+  workflow_dispatch:
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Debug Run
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python3 -c "
+          import poll_worker
+          d = poll_worker.get_active_domain(force_refresh=True)
+          print('Active domain:', d)
+          topics = poll_worker.scrape_discover_feed(d, set())
+          print('Total topics found:', len(topics))
+          for t, l, tid in topics[:8]:
+              print('Scraped topic:', tid, t)
+              dt = poll_worker.extract_post_details(l, fallback_title=t)
+              print('  Details:', bool(dt), 'Magnets:', len(dt.get('magnets', [])) if dt else 0)
+          "
