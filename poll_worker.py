@@ -509,43 +509,41 @@ def main_loop(max_duration=19800):
                         send_msg(cid, "🔍 <i>Fetching the newest torrent release on 1TamilMV...</i>")
                         try:
                             domain = get_active_domain()
-                            all_topics = scrape_discover_feed(domain, seen_posts)
-                            if not all_topics:
-                                send_msg(cid, "⚠️ Could not parse feed at this moment.")
+                            raw_topics = scrape_discover_feed(domain, set())
+                            if not raw_topics:
+                                send_msg(cid, "⚠️ 1TamilMV feed is currently updating or unreachable. Please try again shortly.")
                             else:
-                                dispatched = False
-                                pending_titles = []
-                                for t_title, t_link, t_tid in all_topics[:10]:
-                                    dt = extract_post_details(t_link, fallback_title=t_title)
-                                    if dt and dt.get("magnets"):
-                                        send_alert(cid, t_title, t_link, dt)
-                                        seen_posts.add(t_tid)
-                                        save_seen_posts(seen_posts)
-                                        log_event("LATEST", f"Dispatched release {t_tid}: {t_title[:50]}")
-                                        dispatched = True
-                                        break
-                                    elif dt and dt.get("is_ddl"):
-                                        seen_posts.add(t_tid)
-                                        save_seen_posts(seen_posts)
-                                        log_event("DROP_DDL", f"Topic {t_tid} is a Direct Download post. Discarded.")
-                                    else:
-                                        clean_t = (dt.get("title") if dt and dt.get("title") else t_title).strip()
-                                        pending_titles.append((clean_t, t_link))
+                                unseen_topics = [t for t in raw_topics if t[2] not in seen_posts]
+                                if not unseen_topics:
+                                    send_msg(cid, "✅ <b>Up to date!</b> You have already seen all the newest torrent releases.")
+                                else:
+                                    dispatched = False
+                                    pending_titles = []
+                                    for t_title, t_link, t_tid in unseen_topics[:10]:
+                                        dt = extract_post_details(t_link, fallback_title=t_title)
+                                        if dt and dt.get("magnets"):
+                                            send_alert(cid, t_title, t_link, dt)
+                                            seen_posts.add(t_tid)
+                                            save_seen_posts(seen_posts)
+                                            log_event("LATEST", f"Dispatched release {t_tid}: {t_title[:50]}")
+                                            dispatched = True
+                                            break
+                                        elif dt and dt.get("is_ddl"):
+                                            seen_posts.add(t_tid)
+                                            save_seen_posts(seen_posts)
+                                            log_event("DROP_DDL", f"Topic {t_tid} is a Direct Download post. Discarded.")
+                                        else:
+                                            clean_t = (dt.get("title") if dt and dt.get("title") else t_title).strip()
+                                            pending_titles.append((clean_t, t_link))
 
-                                if not dispatched:
-                                    if pending_titles:
-                                        msg = "ℹ️ <b>Newest releases found (awaiting magnet link upload):</b>\n\n"
-                                        for pt, pl in pending_titles[:4]:
-                                            msg += f"⏳ <a href='{pl}'><b>{html.escape(pt[:70])}</b></a>\n"
-                                        send_msg(cid, msg)
-                                    else:
-                                        send_msg(cid, "✅ <b>Up to date!</b> You have already seen all the newest torrent releases.")
-                                elif pending_titles:
-                                    # If a release with magnets was sent, also show the pending titles above it
-                                    pend_msg = "⏳ <b>Newer releases awaiting magnet link upload:</b>\n"
-                                    for pt, pl in pending_titles[:3]:
-                                        pend_msg += f"• <a href='{pl}'>{html.escape(pt[:65])}</a>\n"
-                                    send_msg(cid, pend_msg)
+                                    if not dispatched:
+                                        if pending_titles:
+                                            msg = "ℹ️ <b>Newest releases found (awaiting magnet link upload):</b>\n\n"
+                                            for pt, pl in pending_titles[:4]:
+                                                msg += f"⏳ <a href='{pl}'><b>{html.escape(pt[:70])}</b></a>\n"
+                                            send_msg(cid, msg)
+                                        else:
+                                            send_msg(cid, "✅ <b>Up to date!</b> You have already seen all the newest torrent releases.")
                         except Exception as e:
                             send_msg(cid, f"⚠️ Error: {e}")
 
