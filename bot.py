@@ -2,6 +2,8 @@ import os
 import json
 import logging
 import re
+import html
+import urllib.parse
 import requests
 from curl_cffi import requests as cffi_requests
 from bs4 import BeautifulSoup
@@ -54,25 +56,63 @@ def load_seen_posts():
     return set()
 
 def save_seen_posts(seen_set):
-    trimmed = list(str(x) for x in seen_set)[-600:]
+    trimmed = list(str(x) for x in seen_set)[-800:]
     with open(STATE_FILE, "w") as f:
         json.dump(trimmed, f, indent=2)
 
-def extract_post_details(topic_url):
-    """Extracts poster, clean title, tech specs, and magnet link."""
+def extract_title_from_slug(url):
+    """Fallback title extracted directly from URL slug."""
+    match = re.search(r"/topic/\d+-([^/?#]+)", url)
+    if match:
+        raw_slug = match.group(1)
+        decoded = urllib.parse.unquote(raw_slug)
+        clean = decoded.replace("-", " ").strip()
+        if clean:
+            return clean
+    return ""
+
+def extract_post_details(topic_url, fallback_title=""):
+    """Fetches full page and extracts full title, poster, details, and magnet."""
     try:
         res = cffi_requests.get(topic_url, impersonate="chrome120", timeout=15, headers=HEADERS)
         if res.status_code != 200:
-            return None
+            return {"title": fallback_title or extract_title_from_slug(topic_url), "image": None, "summary": "", "magnet": None}
+        
         soup = BeautifulSoup(res.text, "html.parser")
         
-        # 1. Title
+        # 1. Title Extraction Hierarchy
         title = ""
-        h1 = soup.find("h1")
+        # IPS Page Title
+        h1 = soup.find("h1", class_=lambda c: c and ("ipsType_pageTitle" in c or "ipsType_break" in c))
+        if not h1:
+            h1 = soup.find("h1")
         if h1:
+            # Clean span / badges (like 'Solved', 'Pinned')
+            for tag in h1.find_all(["span", "a"]):
+                if tag.get("class") and any(b in " ".join(tag.get("class")) for b in ["ipsBadge", "ipsTag"]):
+                    tag.decompose()
             title = h1.get_text(strip=True)
 
-        # 2. Content
+        if not title or len(title) < 5 or title.startswith("["):
+            # Try <title> tag
+            title_tag = soup.find("title")
+            if title_tag:
+                t = title_tag.get_text(strip=True)
+                t = re.sub(r"\s*-\s*1TamilMV.*$", "", t, flags=re.IGNORECASE)
+                t = re.sub(r"\s*-\s*Page\s*\d+.*$", "", t, flags=re.IGNORECASE)
+                if len(t) > len(title):
+                    title = t
+
+        # If still missing or incomplete, use URL slug
+        if not title or len(title) < 5 or title.startswith("["):
+            slug_title = extract_title_from_slug(topic_url)
+            if slug_title:
+                title = f"{slug_title} {title}".strip()
+
+        if not title:
+            title = fallback_title or "1TamilMV Release"
+
+        # 2. Content extraction
         post_content = soup.find("div", {"data-role": "commentContent"}) or soup.find("div", class_="cPost_contentWrap")
         
         image_url = None
@@ -80,24 +120,24 @@ def extract_post_details(topic_url):
         magnet_link = None
         
         if post_content:
-            # Poster image
+            # Poster Image
             for img in post_content.find_all("img"):
                 src = img.get("data-src") or img.get("src")
-                if src and src.startswith("http") and not any(skip in src.lower() for skip in ["emoticons", "default_photo", "logo"]):
+                if src and src.startswith("http") and not any(skip in src.lower() for skip in ["emoticons", "default_photo", "logo", "icon"]):
                     image_url = src
                     break
             
-            # Magnet link
+            # Magnet Link
             for a in post_content.find_all("a", href=True):
                 if a["href"].startswith("magnet:?"):
                     magnet_link = a["href"]
                     break
 
-            # Descriptions (skip excessively long forum disclaimer paragraphs)
+            # Technical details
             text_block = post_content.get_text(separator="\n", strip=True)
             for line in text_block.splitlines():
                 line = line.strip()
-                if line and 5 < len(line) < 120 and not line.startswith("http"):
+                if line and 5 < len(line) < 130 and not line.startswith("http") and not line.startswith("magnet:"):
                     description_lines.append(line)
         
         desc_summary = "\n".join(description_lines[:6])
@@ -109,15 +149,16 @@ def extract_post_details(topic_url):
         }
     except Exception as e:
         logging.warning(f"Failed to extract details for {topic_url}: {e}")
-        return None
+        return {"title": fallback_title or extract_title_from_slug(topic_url), "image": None, "summary": "", "magnet": None}
 
 def send_telegram_alert(chat_id, title, link, details=None):
     if not BOT_TOKEN or not chat_id:
         return
 
-    display_title = (details.get("title") if details and details.get("title") else title).strip()
+    display_title = (details.get("title") if details and details.get("title") else title) or "1TamilMV New Release"
+    display_title = html.escape(display_title.strip())
     image_url = details.get("image") if details else None
-    summary = details.get("summary") if details else ""
+    summary = html.escape(details.get("summary", "") if details else "")
     magnet = details.get("magnet") if details else None
 
     caption = f"🎬 <b>{display_title}</b>\n\n"
@@ -128,7 +169,7 @@ def send_telegram_alert(chat_id, title, link, details=None):
     caption += f"🔗 <a href='{link}'>Open on 1TamilMV</a>"
 
     if len(caption) > 1000:
-        caption = caption[:980] + "...\n\n🔗 <a href='" + link + "'>Open on 1TamilMV</a>"
+        caption = caption[:960] + "...\n\n🔗 <a href='" + link + "'>Open on 1TamilMV</a>"
 
     if image_url:
         photo_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
@@ -167,7 +208,6 @@ def send_plain_message(chat_id, text):
         logging.error(f"Error sending plain message: {e}")
 
 def scrape_recent_topics(domain, seen_posts):
-    """Reliable deduplication by numeric topic ID."""
     targets = [f"{domain}/", f"{domain}/index.php?/discover/"]
     new_topics = []
 
@@ -184,9 +224,14 @@ def scrape_recent_topics(domain, seen_posts):
                     if match:
                         topic_id = str(match.group(1))
                         clean_url = href.split("?")[0].rstrip("/")
-                        title = a.get_text(strip=True)
+                        
+                        # Better title lookup from parent or link text
+                        raw_title = a.get_text(strip=True)
+                        slug_title = extract_title_from_slug(clean_url)
+                        final_t = slug_title if (slug_title and len(slug_title) > len(raw_title)) else raw_title
+
                         if topic_id not in seen_posts and topic_id not in [t[2] for t in new_topics]:
-                            new_topics.append((title or "New Release", clean_url, topic_id))
+                            new_topics.append((final_t or "New Release", clean_url, topic_id))
         except Exception as e:
             logging.warning(f"Error scraping {url}: {e}")
             continue
@@ -210,8 +255,8 @@ def handle_incoming_commands(domain, seen_posts):
     if not updates:
         return
 
-    # Acknowledge updates by setting offset to latest update_id + 1
     last_update_id = updates[-1]["update_id"]
+    # Acknowledge updates immediately
     requests.get(f"{url}?offset={last_update_id + 1}", timeout=5)
 
     for item in updates:
@@ -222,65 +267,61 @@ def handle_incoming_commands(domain, seen_posts):
         if not text or not chat_id:
             continue
 
-        # Security check: ignore commands from unauthorized users
         if ALLOWED_CHAT_ID and chat_id != ALLOWED_CHAT_ID:
             continue
 
         cmd = text.split()[0].lower()
+        logging.info(f"Processing command: {cmd}")
 
         if cmd in ["/check", "/scan"]:
-            send_plain_message(chat_id, "🔍 <i>Checking for new releases...</i>")
+            send_plain_message(chat_id, "🔍 <i>Scanning 1TamilMV for newly posted releases...</i>")
             new_topics = scrape_recent_topics(domain, seen_posts)
             if not new_topics:
                 send_plain_message(chat_id, "✅ <b>Up to date!</b> No new releases found since last scan.")
             else:
                 send_plain_message(chat_id, f"🎉 Found <b>{len(new_topics)}</b> new release(s)!")
                 for title, link, topic_id in reversed(new_topics[:10]):
-                    details = extract_post_details(link)
+                    details = extract_post_details(link, fallback_title=title)
                     send_telegram_alert(chat_id, title, link, details)
                     seen_posts.add(topic_id)
                 save_seen_posts(seen_posts)
 
         elif cmd == "/status":
             status_msg = (
-                f"📊 <b>Bot Status</b>\n\n"
+                f"📊 <b>1TamilMV Bot Status:</b>\n\n"
                 f"🌐 <b>Active Mirror:</b> {domain}\n"
                 f"📁 <b>Tracked Posts:</b> {len(seen_posts)} releases saved\n"
-                f"⏱ <b>Auto Scan Interval:</b> Every 15 minutes\n"
-                f"🛡 <b>Deduplication:</b> Active (Strict Topic-ID Matching)"
+                f"⏱ <b>Auto-Check:</b> Runs every 15 minutes\n"
+                f"🛡 <b>Deduplication:</b> Strict Topic-ID (Zero duplicate spam)"
             )
             send_plain_message(chat_id, status_msg)
 
         elif cmd == "/ping":
-            send_plain_message(chat_id, "🏓 <b>Pong!</b> Bot is fully operational on GitHub Actions.")
+            send_plain_message(chat_id, "🏓 <b>Pong!</b> Bot is fully operational and responsive.")
 
         elif cmd == "/latest":
-            send_plain_message(chat_id, "🔍 <i>Fetching the most recent post...</i>")
-            # Fetch without modifying seen_posts
-            targets = [f"{domain}/"]
-            for u in targets:
-                try:
-                    res = cffi_requests.get(u, impersonate="chrome120", timeout=12, headers=HEADERS)
-                    soup = BeautifulSoup(res.text, "html.parser")
-                    for a in soup.find_all("a", href=True):
-                        href = a["href"]
-                        if "/topic/" in href and re.search(r"/topic/(\d+)-", href):
-                            clean_url = href.split("?")[0].rstrip("/")
-                            details = extract_post_details(clean_url)
-                            send_telegram_alert(chat_id, a.get_text(strip=True), clean_url, details)
-                            break
-                    break
-                except Exception:
-                    pass
+            send_plain_message(chat_id, "🔍 <i>Fetching the most recent release preview...</i>")
+            try:
+                res = cffi_requests.get(f"{domain}/", impersonate="chrome120", timeout=12, headers=HEADERS)
+                soup = BeautifulSoup(res.text, "html.parser")
+                for a in soup.find_all("a", href=True):
+                    href = a["href"]
+                    if "/topic/" in href and re.search(r"/topic/(\d+)-", href):
+                        clean_url = href.split("?")[0].rstrip("/")
+                        details = extract_post_details(clean_url, fallback_title=a.get_text(strip=True))
+                        send_telegram_alert(chat_id, a.get_text(strip=True), clean_url, details)
+                        break
+            except Exception as e:
+                send_plain_message(chat_id, f"⚠️ Error fetching latest: {e}")
 
         elif cmd in ["/start", "/help"]:
             help_text = (
                 "🤖 <b>1TamilMV Notifier Bot Commands:</b>\n\n"
-                "👉 /check - Scan right now for new releases (never duplicates old ones)\n"
+                "👉 /check - Scan right now for new releases\n"
                 "👉 /latest - Preview the most recently posted release\n"
                 "👉 /status - Check current active domain mirror and stats\n"
-                "👉 /ping - Test if bot and server are responsive\n"
-                "👉 /help - Show this command list\n\n"
+                "👉 /ping - Test bot responsiveness\n"
+                "👉 /help - Show this help menu\n\n"
                 "<i>Auto-notifications run automatically in the background every 15 minutes.</i>"
             )
             send_plain_message(chat_id, help_text)
@@ -294,15 +335,15 @@ def run():
     seen_posts = load_seen_posts()
     logging.info(f"Loaded {len(seen_posts)} seen post IDs.")
 
-    # 1. Process any pending manual commands sent to the bot
+    # 1. Process any pending commands sent by user
     handle_incoming_commands(domain, seen_posts)
 
-    # 2. Perform automated scheduled release check
+    # 2. Automated scheduled check
     new_topics = scrape_recent_topics(domain, seen_posts)
     logging.info(f"Found {len(new_topics)} new release(s) during scheduled check.")
 
     for title, link, topic_id in reversed(new_topics[:10]):
-        details = extract_post_details(link)
+        details = extract_post_details(link, fallback_title=title)
         send_telegram_alert(ALLOWED_CHAT_ID, title, link, details)
         seen_posts.add(topic_id)
 
