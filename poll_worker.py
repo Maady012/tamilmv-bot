@@ -608,6 +608,7 @@ def main_loop(max_duration=19800):
                         save_seen_posts(seen_posts)
                 else:
                     log_event("HEARTBEAT", f"Scan complete. Up to date ({len(seen_posts)} tracked).")
+                    send_msg(ALLOWED_CHAT_ID, f"🔄 <b>Auto-Check ({get_now_ist_str()}):</b> No new torrent releases found on 1TamilMV.")
             except Exception as e:
                 log_event("ERROR", f"Auto-scan exception: {e}")
 
