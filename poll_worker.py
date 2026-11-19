@@ -359,14 +359,17 @@ def scrape_discover_feed(domain, seen_posts):
                     continue
                 
                 href = a_tag["href"].strip()
-                # Clean comment params to get base topic
-                href = href.split("&do=findComment")[0].split("#")[0]
+                # Discard comment bumps: if someone comments on an old post, it contains "do=findComment" or "comment-"
+                if "do=findcomment" in href.lower() or "comment-" in href.lower():
+                    continue
 
+                href = href.split("#")[0].split("?")[0]
                 m = re.search(r"/topic/(\d+)-", href)
                 if not m:
                     continue
                 tid_int = int(m.group(1))
-                if tid_int < 10000:
+                # Only monitor newly created releases (Topic ID >= 200000)
+                if tid_int < 200000:
                     continue
                 tid = str(tid_int)
                 if tid in seen_posts:
