@@ -441,7 +441,7 @@ def main_loop(max_duration=19800):
                         send_msg(cid, f"🏓 <b>Pong!</b> Responsive as of <i>{get_now_ist_str()}</i>.")
 
                     elif cmd == "/latest":
-                        send_msg(cid, "🔍 <i>Checking discover feed for new release...</i>")
+                        send_msg(cid, "🔍 <i>Fetching the newest release on 1TamilMV...</i>")
                         try:
                             domain = get_active_domain()
                             all_topics = scrape_discover_feed(domain, set())
@@ -449,20 +449,14 @@ def main_loop(max_duration=19800):
                                 send_msg(cid, "⚠️ Could not parse feed at this moment.")
                             else:
                                 latest_title, latest_link, latest_tid = all_topics[0]
-                                if latest_tid in seen_posts:
-                                    send_msg(cid, (
-                                        "ℹ️ <b>No newer releases!</b>\n\n"
-                                        f"The newest topic on 1TamilMV has already been shared:\n"
-                                        f"📌 <b>{html.escape(latest_title)}</b>"
-                                    ))
-                                    log_event("LATEST", f"Already shared topic {latest_tid}, notified user.")
+                                dt = extract_post_details(latest_link, fallback_title=latest_title)
+                                if dt:
+                                    send_alert(cid, latest_title, latest_link, dt)
+                                    seen_posts.add(latest_tid)
+                                    save_seen_posts(seen_posts)
+                                    log_event("LATEST", f"Dispatched release {latest_tid}: {latest_title[:50]}")
                                 else:
-                                    dt = extract_post_details(latest_link, fallback_title=latest_title)
-                                    if dt:
-                                        send_alert(cid, latest_title, latest_link, dt)
-                                        seen_posts.add(latest_tid)
-                                        save_seen_posts(seen_posts)
-                                        log_event("LATEST", f"Dispatched new release {latest_tid}: {latest_title[:50]}")
+                                    send_msg(cid, f"⚠️ Found newest topic <b>{html.escape(latest_title)}</b> but could not load details.")
                         except Exception as e:
                             send_msg(cid, f"⚠️ Error: {e}")
 
