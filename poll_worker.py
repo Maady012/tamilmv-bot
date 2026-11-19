@@ -3,6 +3,7 @@ import sys
 import time
 import json
 import logging
+import random
 import re
 import html
 import urllib.parse
@@ -13,13 +14,16 @@ from bs4 import BeautifulSoup
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-ALLOWED_CHAT_ID = str(os.getenv("TELEGRAM_CHAT_ID", "")).strip()
+# Strictly lock down to YOUR specific Telegram Chat ID
+ALLOWED_CHAT_ID = str(os.getenv("TELEGRAM_CHAT_ID", "565062030")).strip()
 STATE_FILE = "seen_posts.json"
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-}
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
+]
 
 CANDIDATE_DOMAINS = [
     "https://www.1tamilmv.io",
@@ -35,6 +39,15 @@ CANDIDATE_DOMAINS = [
 CACHED_DOMAIN = None
 LAST_DOMAIN_CHECK = 0
 
+def get_headers():
+    return {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "DNT": "1",
+        "Upgrade-Insecure-Requests": "1",
+    }
+
 def get_active_domain():
     global CACHED_DOMAIN, LAST_DOMAIN_CHECK
     now = time.time()
@@ -43,7 +56,7 @@ def get_active_domain():
 
     for base_url in CANDIDATE_DOMAINS:
         try:
-            res = cffi_requests.get(base_url, impersonate="chrome120", timeout=8, headers=HEADERS)
+            res = cffi_requests.get(base_url, impersonate="chrome120", timeout=8, headers=get_headers())
             if res.status_code == 200 and "tamilmv" in res.text.lower():
                 CACHED_DOMAIN = res.url.rstrip("/")
                 LAST_DOMAIN_CHECK = now
@@ -58,22 +71,19 @@ def load_seen_posts():
         try:
             with open(STATE_FILE, "r") as f:
                 data = json.load(f)
-                # Filter out old faulty URL strings
                 return set(str(x) for x in data if str(x).isdigit())
         except Exception:
             return set()
     return set()
 
 def save_seen_posts(seen_set):
-    trimmed = list(str(x) for x in seen_set if str(x).isdigit())[-800:]
+    trimmed = list(str(x) for x in seen_set if str(x).isdigit())[-1000:]
     with open(STATE_FILE, "w") as f:
         json.dump(trimmed, f, indent=2)
 
 def clean_topic_url(raw_url, domain):
-    """Accurately normalizes 1TamilMV topic URL."""
     if raw_url.startswith("/"):
         raw_url = f"{domain}{raw_url}"
-    # Strip URL fragments and anchor tags like #comment
     raw_url = raw_url.split("#")[0]
     return raw_url
 
@@ -89,14 +99,15 @@ def extract_title_from_slug(url):
 
 def extract_post_details(topic_url, fallback_title=""):
     try:
-        res = cffi_requests.get(topic_url, impersonate="chrome120", timeout=12, headers=HEADERS)
+        # Subtle humanized pause before fetching full post page
+        time.sleep(random.uniform(1.0, 2.5))
+        res = cffi_requests.get(topic_url, impersonate="chrome120", timeout=12, headers=get_headers())
         if res.status_code != 200:
             return {"title": fallback_title or extract_title_from_slug(topic_url), "image": None, "summary": "", "magnet": None}
         soup = BeautifulSoup(res.text, "html.parser")
         
-        # 1. Clean Title
+        # 1. Title Extraction
         title = ""
-        # Find in <title>
         title_tag = soup.find("title")
         if title_tag:
             t = title_tag.get_text(strip=True)
@@ -105,13 +116,11 @@ def extract_post_details(topic_url, fallback_title=""):
             if len(t) > 5 and not t.startswith("["):
                 title = t
 
-        # Find in h1
         if not title:
             h1 = soup.find("h1")
             if h1:
                 title = h1.get_text(strip=True)
 
-        # Fallback to URL slug
         slug_t = extract_title_from_slug(topic_url)
         if not title or title.startswith("[") or len(title) < 5:
             if slug_t:
@@ -200,20 +209,14 @@ def send_msg(chat_id, text):
         pass
 
 def scrape_discover_feed(domain, seen_posts):
-    """Specifically targets /index.php?/discover/ for new release stream items."""
     new_items = []
     discover_url = f"{domain}/index.php?/discover/"
     try:
-        r = cffi_requests.get(discover_url, impersonate="chrome120", timeout=15, headers=HEADERS)
+        r = cffi_requests.get(discover_url, impersonate="chrome120", timeout=15, headers=get_headers())
         if r.status_code == 200:
             soup = BeautifulSoup(r.text, "html.parser")
             
-            # Find stream items on discover feed
             stream_items = soup.find_all(["li", "div"], class_=lambda c: c and ("ipsStreamItem" in c or "cStreamItem" in c))
-            if not stream_items:
-                stream_items = soup.find_all("article")
-
-            # Fallback if specific stream class not found: scan all topic links
             candidate_links = []
             if stream_items:
                 for item in stream_items:
@@ -241,18 +244,19 @@ def scrape_discover_feed(domain, seen_posts):
 
     return new_items
 
-def main_loop(max_duration=19800):  # 5.5 hour cycle per runner
+def main_loop(max_duration=19800):
     start_time = time.time()
     seen_posts = load_seen_posts()
     domain = get_active_domain()
     offset = 0
     last_scrape = 0
-    scrape_interval = 300
+    # Add random jitter between 300-420s (5-7 mins) to look completely organic
+    scrape_interval = random.randint(300, 420)
 
-    logging.info(f"Live worker started on {domain}. Already tracking {len(seen_posts)} topics.")
+    logging.info(f"Private worker active. Restricted to Chat ID: {ALLOWED_CHAT_ID}")
 
     while time.time() - start_time < max_duration:
-        # 1. Real-time command polling
+        # 1. Private Telegram polling
         try:
             upd_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?timeout=2"
             if offset:
@@ -265,9 +269,13 @@ def main_loop(max_duration=19800):  # 5.5 hour cycle per runner
                     msg = u.get("message", {})
                     text = msg.get("text", "").strip()
                     cid = str(msg.get("chat", {}).get("id", ""))
+                    
                     if not text or not cid:
                         continue
-                    if ALLOWED_CHAT_ID and cid != ALLOWED_CHAT_ID:
+
+                    # STRICT SINGLE-USER LOCKDOWN: Drop any request not matching your ID
+                    if cid != ALLOWED_CHAT_ID:
+                        logging.warning(f"Dropped unauthorized request from {cid}")
                         continue
 
                     cmd = text.split()[0].lower()
@@ -287,22 +295,22 @@ def main_loop(max_duration=19800):  # 5.5 hour cycle per runner
 
                     elif cmd == "/status":
                         send_msg(cid, (
-                            f"⚡ <b>1TamilMV Live Notifier</b>\n\n"
+                            f"🛡 <b>Private Stealth Notifier</b>\n\n"
+                            f"🔒 <b>Access:</b> Single-User Lock (Chat ID: {ALLOWED_CHAT_ID})\n"
                             f"🌐 <b>Active Mirror:</b> {domain}\n"
-                            f"🎯 <b>Target Feed:</b> /discover/ stream\n"
-                            f"📁 <b>Tracked:</b> {len(seen_posts)} releases saved\n"
-                            f"⚡ <b>Response Time:</b> Instant (< 1s)\n"
-                            f"🔄 <b>Auto-Scan:</b> Continuous every 5 mins"
+                            f"📁 <b>Tracked:</b> {len(seen_posts)} posts saved\n"
+                            f"⚡ <b>Command Latency:</b> Instant (< 1s)\n"
+                            f"🔄 <b>Auto-Scan:</b> Randomized Jitter (5-7m stealth)"
                         ))
 
                     elif cmd == "/ping":
-                        send_msg(cid, "🏓 <b>Pong!</b> Active and responsive.")
+                        send_msg(cid, "🏓 <b>Pong!</b> Stealth worker operational.")
 
                     elif cmd == "/latest":
                         send_msg(cid, "🔍 <i>Fetching latest discover post...</i>")
                         try:
                             domain = get_active_domain()
-                            items = scrape_discover_feed(domain, set())  # Empty set to get latest
+                            items = scrape_discover_feed(domain, set())
                             if items:
                                 t, l, tid = items[0]
                                 dt = extract_post_details(l, fallback_title=t)
@@ -314,24 +322,24 @@ def main_loop(max_duration=19800):  # 5.5 hour cycle per runner
 
                     elif cmd in ["/start", "/help"]:
                         send_msg(cid, (
-                            "🤖 <b>1TamilMV Live Notifier Menu:</b>\n\n"
-                            "👉 /check - Scan discover feed now for new releases\n"
-                            "👉 /latest - Preview the most recently posted release\n"
-                            "👉 /status - Show active mirror & stats\n"
-                            "👉 /ping - Test response speed\n"
-                            "👉 /help - Show this menu"
+                            "🤖 <b>Private 1TamilMV Notifier:</b>\n\n"
+                            "👉 /check - Scan discover feed now\n"
+                            "👉 /latest - Preview latest release\n"
+                            "👉 /status - Check stealth status & active mirror\n"
+                            "👉 /ping - Test response speed"
                         ))
         except Exception:
             pass
 
-        # 2. Automated background check every 5 minutes
+        # 2. Automated background check with randomized interval
         if time.time() - last_scrape > scrape_interval:
             last_scrape = time.time()
+            scrape_interval = random.randint(300, 420)  # Re-randomize next cycle
             try:
                 domain = get_active_domain()
                 new_items = scrape_discover_feed(domain, seen_posts)
                 if new_items:
-                    logging.info(f"Discover feed found {len(new_items)} new releases")
+                    logging.info(f"Stealth scan found {len(new_items)} new releases")
                     for t, l, tid in reversed(new_items[:10]):
                         details = extract_post_details(l, fallback_title=t)
                         send_alert(ALLOWED_CHAT_ID, t, l, details)
@@ -343,6 +351,7 @@ def main_loop(max_duration=19800):  # 5.5 hour cycle per runner
         time.sleep(1)
 
     save_seen_posts(seen_posts)
+    logging.info("Cycle completed cleanly.")
 
 if __name__ == "__main__":
     main_loop()
