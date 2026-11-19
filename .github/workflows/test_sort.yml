@@ -1,10 +1,10 @@
-name: Test Inspect
+name: Test Sort
 
 on:
   workflow_dispatch:
 
 jobs:
-  inspect:
+  sort:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
@@ -18,5 +18,5 @@ jobs:
       - name: Install Dependencies
         run: pip install curl_cffi beautifulsoup4
 
-      - name: Run Test Inspect
-        run: python test_live_check.py
+      - name: Run Test Sort
+        run: python test_topic_date_check.py
