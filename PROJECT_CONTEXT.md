@@ -11,7 +11,10 @@
 ---
 
 ## 1. System Architecture & Cloud Infrastructure
-- **100% Cloud-Hosted (Zero Local Termux Resource Burden):** Runs autonomously on GitHub Actions Cloud Runner (`ubuntu-latest`) via `.github/workflows/notifier.yml` without burning local phone battery or process limits.
+- **100% Cloud-Hosted (Zero Local Termux Resource Burden):** Runs autonomously on GitHub Actions Cloud Runner (`ubuntu-latest`) via `.github/workflows/notifier.yml`.
+- **Private Repo & Free-Tier Quota Optimization (Option B):** 
+  To stay well within GitHub's free 2,000 monthly minutes for private repositories, the workflow runs on an automated cron schedule (`*/15 1-18 * * *`), operating from **7:00 AM to 12:00 AM IST** every 15 minutes. Each run takes ~30 seconds to scan the feed, process any commands, dispatch alerts, and shut down cleanly (~20-25 minutes total usage per day = ~700 mins/month).
+  - Night releases (12:00 AM to 7:00 AM IST) are caught and delivered in chronological order as soon as the 7:00 AM run triggers.
 - **Bypassing Anti-Bot & Cloudflare:** Built using `curl_cffi` with Chrome 120 browser TLS fingerprint impersonation (`impersonate="chrome120"`).
 - **Candidate Domain Auto-Resolution:** Dynamically cycles through candidate mirrors (`.io`, `.fi`, `.pm`, `.dad`, `.app`, `.biz`, `.yt`, `.wf`), tracks redirects, and uses cached responsive domains.
 - **Mirror Health Alerts:** Automatically notifies Telegram Chat `565062030` if all candidate domains become unresponsive.
