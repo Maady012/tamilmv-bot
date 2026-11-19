@@ -7,6 +7,7 @@ import random
 import re
 import html
 import urllib.parse
+from datetime import datetime, timezone, timedelta
 import requests
 from curl_cffi import requests as cffi_requests
 from bs4 import BeautifulSoup
@@ -14,9 +15,9 @@ from bs4 import BeautifulSoup
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-# Strictly lock down to YOUR specific Telegram Chat ID
 ALLOWED_CHAT_ID = str(os.getenv("TELEGRAM_CHAT_ID", "565062030")).strip()
 STATE_FILE = "seen_posts.json"
+DEBUG_LOG_FILE = "bot_activity.log"
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -38,6 +39,23 @@ CANDIDATE_DOMAINS = [
 
 CACHED_DOMAIN = None
 LAST_DOMAIN_CHECK = 0
+# Track the ID of the latest post served via /latest in this session
+LAST_SERVED_PREVIEW_ID = None
+
+# IST Timezone (UTC + 5:30)
+IST = timezone(timedelta(hours=5, minutes=30))
+
+def get_now_ist_str():
+    return datetime.now(IST).strftime("%Y-%m-%d %I:%M:%S %p IST")
+
+def log_event(event_type, details):
+    line = f"[{get_now_ist_str()}] [{event_type}] {details}\n"
+    try:
+        with open(DEBUG_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:
+        pass
+    logging.info(f"[{event_type}] {details}")
 
 def get_headers():
     return {
@@ -60,7 +78,7 @@ def get_active_domain():
             if res.status_code == 200 and "tamilmv" in res.text.lower():
                 CACHED_DOMAIN = res.url.rstrip("/")
                 LAST_DOMAIN_CHECK = now
-                logging.info(f"Active domain: {CACHED_DOMAIN}")
+                log_event("DOMAIN", f"Active mirror resolved: {CACHED_DOMAIN}")
                 return CACHED_DOMAIN
         except Exception:
             continue
@@ -99,8 +117,7 @@ def extract_title_from_slug(url):
 
 def extract_post_details(topic_url, fallback_title=""):
     try:
-        # Subtle humanized pause before fetching full post page
-        time.sleep(random.uniform(1.0, 2.5))
+        time.sleep(random.uniform(1.0, 2.0))
         res = cffi_requests.get(topic_url, impersonate="chrome120", timeout=12, headers=get_headers())
         if res.status_code != 200:
             return {"title": fallback_title or extract_title_from_slug(topic_url), "image": None, "summary": "", "magnet": None}
@@ -156,7 +173,7 @@ def extract_post_details(topic_url, fallback_title=""):
             "summary": "\n".join(desc_lines[:6]),
             "magnet": magnet_link
         }
-    except Exception:
+    except Exception as e:
         return {"title": fallback_title or extract_title_from_slug(topic_url), "image": None, "summary": "", "magnet": None}
 
 def send_alert(chat_id, title, link, details=None):
@@ -185,6 +202,7 @@ def send_alert(chat_id, title, link, details=None):
                 timeout=10
             )
             if r.status_code == 200:
+                log_event("NOTIFY", f"Photo alert sent: {d_title[:60]}")
                 return
         except Exception:
             pass
@@ -195,6 +213,7 @@ def send_alert(chat_id, title, link, details=None):
             json={"chat_id": chat_id, "text": caption, "parse_mode": "HTML", "disable_web_page_preview": False},
             timeout=10
         )
+        log_event("NOTIFY", f"Text alert sent: {d_title[:60]}")
     except Exception:
         pass
 
@@ -240,23 +259,22 @@ def scrape_discover_feed(domain, seen_posts):
                             title = slug_title or "1TamilMV Release"
                         new_items.append((title, full_url, tid))
     except Exception as e:
-        logging.warning(f"Error scraping discover feed: {e}")
+        log_event("ERROR", f"Discover feed error: {e}")
 
     return new_items
 
 def main_loop(max_duration=19800):
+    global LAST_SERVED_PREVIEW_ID
     start_time = time.time()
     seen_posts = load_seen_posts()
     domain = get_active_domain()
     offset = 0
     last_scrape = 0
-    # Add random jitter between 300-420s (5-7 mins) to look completely organic
     scrape_interval = random.randint(300, 420)
 
-    logging.info(f"Private worker active. Restricted to Chat ID: {ALLOWED_CHAT_ID}")
+    log_event("START", f"Worker initialized on {domain}. Tracked posts: {len(seen_posts)}")
 
     while time.time() - start_time < max_duration:
-        # 1. Private Telegram polling
         try:
             upd_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?timeout=2"
             if offset:
@@ -273,20 +291,24 @@ def main_loop(max_duration=19800):
                     if not text or not cid:
                         continue
 
-                    # STRICT SINGLE-USER LOCKDOWN: Drop any request not matching your ID
+                    # STRICT SINGLE-USER LOCKDOWN
                     if cid != ALLOWED_CHAT_ID:
-                        logging.warning(f"Dropped unauthorized request from {cid}")
+                        log_event("SECURITY", f"Blocked unauthorized message from {cid}")
                         continue
 
                     cmd = text.split()[0].lower()
+                    log_event("COMMAND", f"Received command '{cmd}' from {cid}")
+
                     if cmd in ["/check", "/scan"]:
                         send_msg(cid, "🔍 <i>Checking 1TamilMV discover feed for new releases...</i>")
                         domain = get_active_domain()
                         items = scrape_discover_feed(domain, seen_posts)
                         if not items:
                             send_msg(cid, "✅ <b>Up to date!</b> No new releases found since last scan.")
+                            log_event("CHECK", "Scan completed: 0 new releases.")
                         else:
                             send_msg(cid, f"🎉 Found <b>{len(items)}</b> new release(s)!")
+                            log_event("CHECK", f"Scan completed: found {len(items)} new releases.")
                             for t, l, tid in reversed(items[:10]):
                                 details = extract_post_details(l, fallback_title=t)
                                 send_alert(cid, t, l, details)
@@ -296,62 +318,83 @@ def main_loop(max_duration=19800):
                     elif cmd == "/status":
                         send_msg(cid, (
                             f"🛡 <b>Private Stealth Notifier</b>\n\n"
-                            f"🔒 <b>Access:</b> Single-User Lock (Chat ID: {ALLOWED_CHAT_ID})\n"
+                            f"🔒 <b>Access:</b> Locked to your ID ({ALLOWED_CHAT_ID})\n"
                             f"🌐 <b>Active Mirror:</b> {domain}\n"
-                            f"📁 <b>Tracked:</b> {len(seen_posts)} posts saved\n"
+                            f"📁 <b>Tracked:</b> {len(seen_posts)} posts recorded\n"
+                            f"🕒 <b>Last Check:</b> {get_now_ist_str()}\n"
                             f"⚡ <b>Command Latency:</b> Instant (< 1s)\n"
-                            f"🔄 <b>Auto-Scan:</b> Randomized Jitter (5-7m stealth)"
+                            f"🔄 <b>Auto-Scan:</b> Randomized Jitter (5-7m)"
                         ))
 
                     elif cmd == "/ping":
-                        send_msg(cid, "🏓 <b>Pong!</b> Stealth worker operational.")
+                        send_msg(cid, f"🏓 <b>Pong!</b> Operational as of {get_now_ist_str()}.")
 
                     elif cmd == "/latest":
-                        send_msg(cid, "🔍 <i>Fetching latest discover post...</i>")
+                        send_msg(cid, "🔍 <i>Checking discover feed for latest release...</i>")
                         try:
                             domain = get_active_domain()
                             items = scrape_discover_feed(domain, set())
                             if items:
                                 t, l, tid = items[0]
-                                dt = extract_post_details(l, fallback_title=t)
-                                send_alert(cid, t, l, dt)
+                                if tid == LAST_SERVED_PREVIEW_ID:
+                                    send_msg(cid, f"ℹ️ <b>No new release since your last /latest check!</b>\n\nThe current latest release is still:\n📌 <b>{html.escape(t)}</b>")
+                                    log_event("LATEST", f"Repeated /latest requested for Topic {tid}; informed user.")
+                                else:
+                                    LAST_SERVED_PREVIEW_ID = tid
+                                    dt = extract_post_details(l, fallback_title=t)
+                                    send_alert(cid, t, l, dt)
+                                    log_event("LATEST", f"Served new preview for Topic {tid}: {t[:50]}")
                             else:
-                                send_msg(cid, "⚠️ Could not parse latest topic.")
+                                send_msg(cid, "⚠️ Could not parse feed at this moment.")
                         except Exception as e:
                             send_msg(cid, f"⚠️ Error: {e}")
+
+                    elif cmd == "/logs":
+                        # Send last 10 log entries directly to Telegram for easy debugging
+                        try:
+                            if os.path.exists(DEBUG_LOG_FILE):
+                                with open(DEBUG_LOG_FILE, "r", encoding="utf-8") as f:
+                                    recent = f.readlines()[-12:]
+                                log_text = "📜 <b>Recent Bot Event Logs:</b>\n\n<pre>" + html.escape("".join(recent)) + "</pre>"
+                                send_msg(cid, log_text)
+                            else:
+                                send_msg(cid, "ℹ️ No event logs recorded yet.")
+                        except Exception as e:
+                            send_msg(cid, f"⚠️ Error reading logs: {e}")
 
                     elif cmd in ["/start", "/help"]:
                         send_msg(cid, (
                             "🤖 <b>Private 1TamilMV Notifier:</b>\n\n"
-                            "👉 /check - Scan discover feed now\n"
-                            "👉 /latest - Preview latest release\n"
-                            "👉 /status - Check stealth status & active mirror\n"
+                            "👉 /check - Scan for new releases now\n"
+                            "👉 /latest - Preview the latest upload (won't repeat unnecessarily)\n"
+                            "👉 /status - Check system status & mirror\n"
+                            "👉 /logs - View live timestamped event logs for debugging\n"
                             "👉 /ping - Test response speed"
                         ))
         except Exception:
             pass
 
-        # 2. Automated background check with randomized interval
+        # Background automated scan
         if time.time() - last_scrape > scrape_interval:
             last_scrape = time.time()
-            scrape_interval = random.randint(300, 420)  # Re-randomize next cycle
+            scrape_interval = random.randint(300, 420)
             try:
                 domain = get_active_domain()
                 new_items = scrape_discover_feed(domain, seen_posts)
                 if new_items:
-                    logging.info(f"Stealth scan found {len(new_items)} new releases")
+                    log_event("AUTOSCAN", f"Found {len(new_items)} new releases automatically.")
                     for t, l, tid in reversed(new_items[:10]):
                         details = extract_post_details(l, fallback_title=t)
                         send_alert(ALLOWED_CHAT_ID, t, l, details)
                         seen_posts.add(tid)
                     save_seen_posts(seen_posts)
             except Exception as e:
-                logging.warning(f"Auto-scan error: {e}")
+                log_event("ERROR", f"Auto-scan exception: {e}")
 
         time.sleep(1)
 
     save_seen_posts(seen_posts)
-    logging.info("Cycle completed cleanly.")
+    log_event("CYCLE", "5-hour worker cycle ended cleanly.")
 
 if __name__ == "__main__":
     main_loop()
