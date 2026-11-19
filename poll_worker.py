@@ -350,175 +350,181 @@ def scrape_discover_feed(domain, seen_posts):
     # Descending numeric Topic ID ensures newest releases first
     return sorted(discovered_topics.values(), key=lambda x: int(x[2]), reverse=True)
 
-def main_loop(max_duration=60):
+def main_loop(max_duration=19800):
     start_time = time.time()
     seen_posts = load_seen_posts()
     domain = get_active_domain()
     offset = 0
+    last_scrape = 0
+    scrape_interval = random.randint(300, 420)
 
-    log_event("START", f"Scheduled cycle started on {domain}. Tracked: {len(seen_posts)}")
+    log_event("START", f"Live continuous worker active on {domain}. Tracked: {len(seen_posts)}")
 
-    # 1. Process all pending Telegram Commands & TorBox Button Clicks
-    try:
-        upd_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?timeout=1"
-        res = requests.get(upd_url, timeout=4)
-        if res.status_code == 200:
-            updates = res.json().get("result", [])
-            for u in updates:
-                offset = u["update_id"] + 1
-                
-                # Handle Inline Button Clicks
-                callback = u.get("callback_query")
-                if callback:
-                    cb_id = callback.get("id")
-                    cb_data = callback.get("data")
-                    cb_user = str(callback.get("from", {}).get("id"))
-                    
-                    if cb_user == ALLOWED_CHAT_ID and cb_data in CALLBACK_CACHE:
-                        magnet_to_send = CALLBACK_CACHE[cb_data]
-                        success, msg = add_to_torbox(magnet_to_send)
-                        ans_text = "✅ Added to your TorBox Cloud!" if success else f"⚠️ {msg}"
-                        requests.post(
-                            f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery",
-                            json={"callback_query_id": cb_id, "text": ans_text, "show_alert": True},
-                            timeout=5
-                        )
-                        log_event("TORBOX", f"Button tapped: {ans_text}")
-                    continue
-
-                # Handle Text Commands
-                msg = u.get("message", {})
-                text = msg.get("text", "").strip()
-                cid = str(msg.get("chat", {}).get("id", ""))
-                
-                if not text or not cid:
-                    continue
-
-                if cid != ALLOWED_CHAT_ID:
-                    log_event("SECURITY", f"Dropped message from {cid}")
-                    continue
-
-                cmd = text.split()[0].lower()
-                log_event("COMMAND", f"Processing '{cmd}' from {cid}")
-
-                if cmd in ["/check", "/scan"]:
-                    send_msg(cid, "🔍 <i>Checking for newly created releases...</i>")
-                    items = scrape_discover_feed(domain, seen_posts)
-                    if not items:
-                        send_msg(cid, "✅ <b>Up to date!</b> No new releases found since last scan.")
-                    else:
-                        new_alerts = 0
-                        for t, l, tid in reversed(items[:8]):
-                            details = extract_post_details(l, fallback_title=t)
-                            if details and details.get("magnets"):
-                                send_alert(cid, t, l, details)
-                                seen_posts.add(tid)
-                                new_alerts += 1
-                            else:
-                                log_event("WAIT_MAGNET", f"Topic {tid} has no magnet yet. Kept pending.")
-                        if new_alerts > 0:
-                            save_seen_posts(seen_posts)
-                        else:
-                            send_msg(cid, "ℹ️ New posts found, but awaiting magnet link upload by uploader.")
-
-                elif cmd == "/status":
-                    send_msg(cid, (
-                        "━━━━━━━━━━━━━━━━━━━━━━\n"
-                        "🛡 <b>1TamilMV Live Status</b>\n"
-                        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                        f"👤 <b>Access:</b> Locked to ID <code>{ALLOWED_CHAT_ID}</code>\n"
-                        f"🌐 <b>Active Mirror:</b> {domain}\n"
-                        f"📁 <b>Tracked Topics:</b> <b>{len(seen_posts)}</b> releases\n"
-                        f"⚡ <b>TorBox Integration:</b> Active (Instant Cloud Push)\n"
-                        f"🛡 <b>Duplicate Guard:</b> Strict Topic ID Filtering\n"
-                        f"🕒 <b>Server Time:</b> <i>{get_now_ist_str()}</i>\n"
-                        f"⚡ <b>Mode:</b> Eco Schedule (7 AM - 12 AM IST)"
-                    ))
-
-                elif cmd == "/ping":
-                    send_msg(cid, f"🏓 <b>Pong!</b> Responsive as of <i>{get_now_ist_str()}</i>.")
-
-                elif cmd == "/latest":
-                    send_msg(cid, "🔍 <i>Fetching the newest torrent release on 1TamilMV...</i>")
-                    try:
-                        all_topics = scrape_discover_feed(domain, set())
-                        if not all_topics:
-                            send_msg(cid, "⚠️ Could not parse feed at this moment.")
-                        else:
-                            dispatched = False
-                            for t_title, t_link, t_tid in all_topics:
-                                dt = extract_post_details(t_link, fallback_title=t_title)
-                                if dt and dt.get("magnets"):
-                                    send_alert(cid, t_title, t_link, dt)
-                                    seen_posts.add(t_tid)
-                                    save_seen_posts(seen_posts)
-                                    log_event("LATEST", f"Dispatched release {t_tid}: {t_title[:50]}")
-                                    dispatched = True
-                                    break
-                            if not dispatched:
-                                send_msg(cid, "ℹ️ No recent torrent-based releases found right now.")
-                    except Exception as e:
-                        send_msg(cid, f"⚠️ Error: {e}")
-
-                elif cmd == "/logs":
-                    try:
-                        if os.path.exists(DEBUG_LOG_FILE):
-                            with open(DEBUG_LOG_FILE, "r", encoding="utf-8") as f:
-                                recent = f.readlines()[-12:]
-                            log_text = (
-                                "━━━━━━━━━━━━━━━━━━━━━━\n"
-                                "📜 <b>Recent Bot Event Logs</b>\n"
-                                "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                                "<pre>" + html.escape("".join(recent)) + "</pre>"
-                            )
-                            send_msg(cid, log_text)
-                        else:
-                            send_msg(cid, "ℹ️ No event logs recorded yet.")
-                    except Exception as e:
-                        send_msg(cid, f"⚠️ Error reading logs: {e}")
-
-                elif cmd in ["/start", "/help"]:
-                    send_msg(cid, (
-                        "━━━━━━━━━━━━━━━━━━━━━━\n"
-                        "🤖 <b>1TamilMV Notifier Commands</b>\n"
-                        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                        "👉 <b>/check</b> - Scan for new releases now\n"
-                        "👉 <b>/latest</b> - Preview the newest release\n"
-                        "👉 <b>/status</b> - System health & TorBox status\n"
-                        "👉 <b>/logs</b> - View recent event logs\n"
-                        "👉 <b>/ping</b> - Test response speed"
-                    ))
-
-            # Acknowledge processed updates
+    while time.time() - start_time < max_duration:
+        # 1. Real-time command processing and TorBox callbacks (< 1s response)
+        try:
+            upd_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?timeout=2"
             if offset:
-                requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={offset}", timeout=3)
-    except Exception as e:
-        log_event("CMD_ERR", f"Error during update processing: {e}")
+                upd_url += f"&offset={offset}"
+            res = requests.get(upd_url, timeout=5)
+            if res.status_code == 200:
+                updates = res.json().get("result", [])
+                for u in updates:
+                    offset = u["update_id"] + 1
+                    
+                    # Handle Inline Button Clicks (TorBox)
+                    callback = u.get("callback_query")
+                    if callback:
+                        cb_id = callback.get("id")
+                        cb_data = callback.get("data")
+                        cb_user = str(callback.get("from", {}).get("id"))
+                        
+                        if cb_user == ALLOWED_CHAT_ID and cb_data in CALLBACK_CACHE:
+                            magnet_to_send = CALLBACK_CACHE[cb_data]
+                            success, msg = add_to_torbox(magnet_to_send)
+                            ans_text = "✅ Added to your TorBox Cloud!" if success else f"⚠️ {msg}"
+                            requests.post(
+                                f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery",
+                                json={"callback_query_id": cb_id, "text": ans_text, "show_alert": True},
+                                timeout=5
+                            )
+                            log_event("TORBOX", f"Button tapped: {ans_text}")
+                        continue
 
-    # 2. Perform Release Auto-Scan
-    try:
-        new_items = scrape_discover_feed(domain, seen_posts)
-        if new_items:
-            log_event("AUTOSCAN", f"Found {len(new_items)} candidate release(s).")
-            new_alerts = 0
-            for t, l, tid in reversed(new_items[:8]):
-                details = extract_post_details(l, fallback_title=t)
-                if details and details.get("magnets"):
-                    send_alert(ALLOWED_CHAT_ID, t, l, details)
-                    seen_posts.add(tid)
-                    new_alerts += 1
-                else:
-                    log_event("WAIT_MAGNET", f"Topic {tid} has no magnet yet. Kept pending.")
-            if new_alerts > 0:
-                save_seen_posts(seen_posts)
-                log_event("SAVED", f"Dispatched {new_alerts} new releases and saved state.")
-        else:
-            log_event("AUTOSCAN", "No new releases in this cycle.")
-    except Exception as e:
-        log_event("ERROR", f"Auto-scan exception: {e}")
+                    # Handle Text Commands
+                    msg = u.get("message", {})
+                    text = msg.get("text", "").strip()
+                    cid = str(msg.get("chat", {}).get("id", ""))
+                    
+                    if not text or not cid:
+                        continue
+
+                    if cid != ALLOWED_CHAT_ID:
+                        log_event("SECURITY", f"Dropped message from {cid}")
+                        continue
+
+                    cmd = text.split()[0].lower()
+                    log_event("COMMAND", f"Processing '{cmd}' from {cid}")
+
+                    if cmd in ["/check", "/scan"]:
+                        send_msg(cid, "🔍 <i>Checking for newly created releases...</i>")
+                        domain = get_active_domain()
+                        items = scrape_discover_feed(domain, seen_posts)
+                        if not items:
+                            send_msg(cid, "✅ <b>Up to date!</b> No new releases found since last scan.")
+                        else:
+                            new_alerts = 0
+                            for t, l, tid in reversed(items[:8]):
+                                details = extract_post_details(l, fallback_title=t)
+                                if details and details.get("magnets"):
+                                    send_alert(cid, t, l, details)
+                                    seen_posts.add(tid)
+                                    new_alerts += 1
+                                else:
+                                    log_event("WAIT_MAGNET", f"Topic {tid} has no magnet yet. Kept pending.")
+                            if new_alerts > 0:
+                                save_seen_posts(seen_posts)
+                            else:
+                                send_msg(cid, "ℹ️ New posts found, but awaiting magnet link upload by uploader.")
+
+                    elif cmd == "/status":
+                        send_msg(cid, (
+                            "━━━━━━━━━━━━━━━━━━━━━━\n"
+                            "🛡 <b>1TamilMV Live Status</b>\n"
+                            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                            f"👤 <b>Access:</b> Locked to ID <code>{ALLOWED_CHAT_ID}</code>\n"
+                            f"🌐 <b>Active Mirror:</b> {domain}\n"
+                            f"📁 <b>Tracked Topics:</b> <b>{len(seen_posts)}</b> releases\n"
+                            f"⚡ <b>TorBox Integration:</b> Active (Instant Cloud Push)\n"
+                            f"🛡 <b>Duplicate Guard:</b> Strict Topic ID Filtering\n"
+                            f"🕒 <b>Server Time:</b> <i>{get_now_ist_str()}</i>\n"
+                            f"⚡ <b>Mode:</b> 24/7 Unlimited (Instant < 1s)"
+                        ))
+
+                    elif cmd == "/ping":
+                        send_msg(cid, f"🏓 <b>Pong!</b> Responsive as of <i>{get_now_ist_str()}</i>.")
+
+                    elif cmd == "/latest":
+                        send_msg(cid, "🔍 <i>Fetching the newest torrent release on 1TamilMV...</i>")
+                        try:
+                            domain = get_active_domain()
+                            all_topics = scrape_discover_feed(domain, set())
+                            if not all_topics:
+                                send_msg(cid, "⚠️ Could not parse feed at this moment.")
+                            else:
+                                dispatched = False
+                                for t_title, t_link, t_tid in all_topics:
+                                    dt = extract_post_details(t_link, fallback_title=t_title)
+                                    if dt and dt.get("magnets"):
+                                        send_alert(cid, t_title, t_link, dt)
+                                        seen_posts.add(t_tid)
+                                        save_seen_posts(seen_posts)
+                                        log_event("LATEST", f"Dispatched release {t_tid}: {t_title[:50]}")
+                                        dispatched = True
+                                        break
+                                if not dispatched:
+                                    send_msg(cid, "ℹ️ No recent torrent-based releases found right now.")
+                        except Exception as e:
+                            send_msg(cid, f"⚠️ Error: {e}")
+
+                    elif cmd == "/logs":
+                        try:
+                            if os.path.exists(DEBUG_LOG_FILE):
+                                with open(DEBUG_LOG_FILE, "r", encoding="utf-8") as f:
+                                    recent = f.readlines()[-12:]
+                                log_text = (
+                                    "━━━━━━━━━━━━━━━━━━━━━━\n"
+                                    "📜 <b>Recent Bot Event Logs</b>\n"
+                                    "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                                    "<pre>" + html.escape("".join(recent)) + "</pre>"
+                                )
+                                send_msg(cid, log_text)
+                            else:
+                                send_msg(cid, "ℹ️ No event logs recorded yet.")
+                        except Exception as e:
+                            send_msg(cid, f"⚠️ Error reading logs: {e}")
+
+                    elif cmd in ["/start", "/help"]:
+                        send_msg(cid, (
+                            "━━━━━━━━━━━━━━━━━━━━━━\n"
+                            "🤖 <b>1TamilMV Notifier Commands</b>\n"
+                            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                            "👉 <b>/check</b> - Scan for new releases now\n"
+                            "👉 <b>/latest</b> - Preview the newest release\n"
+                            "👉 <b>/status</b> - System health & TorBox status\n"
+                            "👉 <b>/logs</b> - View recent event logs\n"
+                            "👉 <b>/ping</b> - Test response speed"
+                        ))
+        except Exception:
+            pass
+
+        # 2. Automated background scrape check every 5-7 minutes
+        if time.time() - last_scrape > scrape_interval:
+            last_scrape = time.time()
+            scrape_interval = random.randint(300, 420)
+            try:
+                domain = get_active_domain()
+                new_items = scrape_discover_feed(domain, seen_posts)
+                if new_items:
+                    log_event("AUTOSCAN", f"Found {len(new_items)} candidate release(s).")
+                    new_alerts = 0
+                    for t, l, tid in reversed(new_items[:8]):
+                        details = extract_post_details(l, fallback_title=t)
+                        if details and details.get("magnets"):
+                            send_alert(ALLOWED_CHAT_ID, t, l, details)
+                            seen_posts.add(tid)
+                            new_alerts += 1
+                        else:
+                            log_event("WAIT_MAGNET", f"Topic {tid} has no magnet yet. Kept pending.")
+                    if new_alerts > 0:
+                        save_seen_posts(seen_posts)
+            except Exception as e:
+                log_event("ERROR", f"Auto-scan exception: {e}")
+
+        time.sleep(1)
 
     save_seen_posts(seen_posts)
-    log_event("CYCLE", f"Cycle completed in {round(time.time() - start_time, 2)}s.")
+    log_event("CYCLE", f"5-hour runner cycle ended cleanly.")
 
 if __name__ == "__main__":
     main_loop()
