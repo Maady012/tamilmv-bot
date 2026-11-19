@@ -1,4 +1,4 @@
-name: Test Feed Scraper
+name: Test Forums Home
 on: workflow_dispatch
 jobs:
   test:
@@ -14,24 +14,23 @@ jobs:
           from curl_cffi import requests as cffi_requests
           from bs4 import BeautifulSoup
           import re
-          from poll_worker import get_active_domain, scrape_discover_feed
+          from poll_worker import get_active_domain
 
           domain = get_active_domain()
-          print('Active domain:', domain)
-          r = cffi_requests.get(f'{domain}/index.php?/discover/', impersonate='chrome120', timeout=12)
-          print('Discover status:', r.status_code)
+          r = cffi_requests.get(domain, impersonate='chrome120', timeout=12)
+          print('Home status:', r.status_code, 'Final URL:', r.url)
           soup = BeautifulSoup(r.text, 'html.parser')
           
-          # Test discover items
-          stream = soup.find('ol', class_='ipsStream') or soup
-          for li in stream.find_all('li', class_='ipsStreamItem')[:15]:
-              a = li.find('a', href=re.compile(r'/topic/'))
-              if a:
-                  print('Item link:', a['href'], '| Text:', a.get_text(strip=True)[:40])
-          
-          # Also test forum home / new topics
-          print('--- SCRAPE DISCOVER FEED OUTPUT ---')
-          items = scrape_discover_feed(domain, set())
-          for t, l, tid in items[:10]:
-              print(f'TID: {tid} | Title: {t[:50]} | Link: {l}')
+          # Find all topic links on home page
+          topic_links = soup.find_all('a', href=re.compile(r'/forums/topic/\d+-'))
+          print(f'Total topic links on home page: {len(topic_links)}')
+          seen = set()
+          for a in topic_links[:30]:
+              href = a['href']
+              text = a.get_text(strip=True)
+              m = re.search(r'/topic/(\d+)-', href)
+              tid = m.group(1) if m else None
+              if tid not in seen:
+                  seen.add(tid)
+                  print(f'Home TID {tid}: {text[:50]} | {href[:80]}')
           "
