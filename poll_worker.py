@@ -39,7 +39,6 @@ CANDIDATE_DOMAINS = [
 
 CACHED_DOMAIN = None
 LAST_DOMAIN_CHECK = 0
-LAST_SERVED_PREVIEW_ID = None
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -76,7 +75,7 @@ def get_active_domain():
             if res.status_code == 200 and "tamilmv" in res.text.lower():
                 CACHED_DOMAIN = res.url.rstrip("/")
                 LAST_DOMAIN_CHECK = now
-                log_event("DOMAIN", f"Active mirror resolved: {CACHED_DOMAIN}")
+                log_event("DOMAIN", f"Active mirror: {CACHED_DOMAIN}")
                 return CACHED_DOMAIN
         except Exception:
             continue
@@ -114,11 +113,9 @@ def extract_title_from_slug(url):
     return ""
 
 def clean_magnet_label(label, fallback="Magnet Link"):
-    """Extracts resolution or quality tags for clean display in Telegram."""
     if not label:
         return fallback
     clean = re.sub(r"(?i)www\.1tamilmv\.\w+\s*-\s*", "", label)
-    # Highlight quality like 1080p, 720p, 4K, 2.4GB, HEVC
     m = re.search(r"(\b(?:4K|2160p|1080p|720p|HDRip|BluRay|HEVC|AVC|x264|x265)\b.*)", clean, re.IGNORECASE)
     if m:
         short = m.group(1).strip(" -_")
@@ -127,17 +124,20 @@ def clean_magnet_label(label, fallback="Magnet Link"):
 
 def extract_post_details(topic_url, fallback_title=""):
     try:
-        time.sleep(random.uniform(1.0, 2.0))
+        time.sleep(random.uniform(0.5, 1.2))
         res = cffi_requests.get(topic_url, impersonate="chrome120", timeout=12, headers=get_headers())
         if res.status_code != 200:
-            return {"title": fallback_title or extract_title_from_slug(topic_url), "image": None, "summary": "", "magnets": []}
+            return None
+            
         soup = BeautifulSoup(res.text, "html.parser")
         
-        # 1. Clean Title
+        # 1. Title Extraction
         title = ""
         title_tag = soup.find("title")
         if title_tag:
             t = title_tag.get_text(strip=True)
+            if "not find that" in t.lower() or "error" in t.lower():
+                return None
             t = re.sub(r"\s*-\s*1TamilMV.*$", "", t, flags=re.IGNORECASE)
             t = re.sub(r"\s*-\s*Page\s*\d+.*$", "", t, flags=re.IGNORECASE)
             if len(t) > 5 and not t.startswith("["):
@@ -168,7 +168,6 @@ def extract_post_details(topic_url, fallback_title=""):
                     image_url = src
                     break
             
-            # Extract all distinct magnet links
             seen_hashes = set()
             for a in post_content.find_all("a", href=True):
                 href = a["href"].strip()
@@ -195,7 +194,8 @@ def extract_post_details(topic_url, fallback_title=""):
             "magnets": magnets
         }
     except Exception as e:
-        return {"title": fallback_title or extract_title_from_slug(topic_url), "image": None, "summary": "", "magnets": []}
+        log_event("EXTRACT_ERR", f"Error on {topic_url}: {e}")
+        return None
 
 def send_alert(chat_id, title, link, details=None):
     if not BOT_TOKEN or not chat_id:
@@ -211,7 +211,7 @@ def send_alert(chat_id, title, link, details=None):
     
     if magnets:
         caption += "🧲 <b>Direct Magnet Links:</b>\n"
-        for idx, m in enumerate(magnets[:6], 1):  # Limit to 6 to stay well inside caption limits
+        for m in magnets[:6]:
             safe_label = html.escape(m["label"])
             caption += f"• <a href='{m['url']}'><b>{safe_label}</b></a>\n"
         caption += "\n"
@@ -277,6 +277,9 @@ def scrape_discover_feed(domain, seen_posts):
                 m = re.search(r"/topic/(\d+)-", href)
                 if m:
                     tid = str(m.group(1))
+                    # Skip old forum pinned placeholder IDs like 183
+                    if int(tid) < 10000:
+                        continue
                     if tid not in seen_posts and tid not in [x[2] for x in new_items]:
                         full_url = clean_topic_url(href, domain)
                         raw_title = a.get_text(strip=True)
@@ -291,7 +294,6 @@ def scrape_discover_feed(domain, seen_posts):
     return new_items
 
 def main_loop(max_duration=19800):
-    global LAST_SERVED_PREVIEW_ID
     start_time = time.time()
     seen_posts = load_seen_posts()
     domain = get_active_domain()
@@ -299,7 +301,7 @@ def main_loop(max_duration=19800):
     last_scrape = 0
     scrape_interval = random.randint(300, 420)
 
-    log_event("START", f"Worker active with multi-magnet engine. Domain: {domain}")
+    log_event("START", f"Worker initialized. Active domain: {domain}")
 
     while time.time() - start_time < max_duration:
         try:
@@ -319,11 +321,11 @@ def main_loop(max_duration=19800):
                         continue
 
                     if cid != ALLOWED_CHAT_ID:
-                        log_event("SECURITY", f"Blocked unauthorized message from {cid}")
+                        log_event("SECURITY", f"Dropped message from {cid}")
                         continue
 
                     cmd = text.split()[0].lower()
-                    log_event("COMMAND", f"Received command '{cmd}' from {cid}")
+                    log_event("COMMAND", f"Processing '{cmd}' from {cid}")
 
                     if cmd in ["/check", "/scan"]:
                         send_msg(cid, "🔍 <i>Checking 1TamilMV discover feed for new releases...</i>")
@@ -331,47 +333,47 @@ def main_loop(max_duration=19800):
                         items = scrape_discover_feed(domain, seen_posts)
                         if not items:
                             send_msg(cid, "✅ <b>Up to date!</b> No new releases found since last scan.")
-                            log_event("CHECK", "Scan completed: 0 new releases.")
                         else:
                             send_msg(cid, f"🎉 Found <b>{len(items)}</b> new release(s)!")
-                            log_event("CHECK", f"Scan completed: found {len(items)} new releases.")
-                            for t, l, tid in reversed(items[:10]):
+                            sent_count = 0
+                            for t, l, tid in reversed(items[:8]):
                                 details = extract_post_details(l, fallback_title=t)
-                                send_alert(cid, t, l, details)
+                                if details:
+                                    send_alert(cid, t, l, details)
+                                    sent_count += 1
                                 seen_posts.add(tid)
                             save_seen_posts(seen_posts)
 
                     elif cmd == "/status":
                         send_msg(cid, (
-                            f"🛡 <b>Private Stealth Notifier</b>\n\n"
-                            f"🔒 <b>Access:</b> Locked to your ID ({ALLOWED_CHAT_ID})\n"
+                            f"🛡 <b>1TamilMV Live Status</b>\n\n"
+                            f"🔒 <b>User Access:</b> Locked to your ID ({ALLOWED_CHAT_ID})\n"
                             f"🌐 <b>Active Mirror:</b> {domain}\n"
                             f"📁 <b>Tracked:</b> {len(seen_posts)} posts recorded\n"
-                            f"🕒 <b>Last Check:</b> {get_now_ist_str()}\n"
+                            f"🕒 <b>Server Time:</b> {get_now_ist_str()}\n"
                             f"⚡ <b>Command Latency:</b> Instant (< 1s)\n"
                             f"🔄 <b>Auto-Scan:</b> Randomized Jitter (5-7m)"
                         ))
 
                     elif cmd == "/ping":
-                        send_msg(cid, f"🏓 <b>Pong!</b> Operational as of {get_now_ist_str()}.")
+                        send_msg(cid, f"🏓 <b>Pong!</b> Responsive as of {get_now_ist_str()}.")
 
                     elif cmd == "/latest":
-                        send_msg(cid, "🔍 <i>Checking discover feed for latest release...</i>")
+                        send_msg(cid, "🔍 <i>Fetching the latest live release with magnet links...</i>")
                         try:
                             domain = get_active_domain()
                             items = scrape_discover_feed(domain, set())
-                            if items:
-                                t, l, tid = items[0]
-                                if tid == LAST_SERVED_PREVIEW_ID:
-                                    send_msg(cid, f"ℹ️ <b>No new release since your last /latest check!</b>\n\nThe current latest release is still:\n📌 <b>{html.escape(t)}</b>")
-                                    log_event("LATEST", f"Repeated /latest requested for Topic {tid}; informed user.")
-                                else:
-                                    LAST_SERVED_PREVIEW_ID = tid
-                                    dt = extract_post_details(l, fallback_title=t)
+                            found_one = False
+                            # Walk through top items until a valid, active movie post is found
+                            for t, l, tid in items[:5]:
+                                dt = extract_post_details(l, fallback_title=t)
+                                if dt:
                                     send_alert(cid, t, l, dt)
-                                    log_event("LATEST", f"Served new preview for Topic {tid}: {t[:50]}")
-                            else:
-                                send_msg(cid, "⚠️ Could not parse feed at this moment.")
+                                    log_event("LATEST", f"Served latest for Topic {tid}: {t[:50]}")
+                                    found_one = True
+                                    break
+                            if not found_one:
+                                send_msg(cid, "⚠️ Could not parse latest topic details at this moment.")
                         except Exception as e:
                             send_msg(cid, f"⚠️ Error: {e}")
 
@@ -391,15 +393,14 @@ def main_loop(max_duration=19800):
                         send_msg(cid, (
                             "🤖 <b>Private 1TamilMV Notifier:</b>\n\n"
                             "👉 /check - Scan for new releases now\n"
-                            "👉 /latest - Preview latest release (with direct magnet links)\n"
-                            "👉 /status - Check system status & mirror\n"
-                            "👉 /logs - View live timestamped event logs\n"
+                            "👉 /latest - Preview latest release with direct magnet links\n"
+                            "👉 /status - Check live health and server time\n"
+                            "👉 /logs - View live event logs for debugging\n"
                             "👉 /ping - Test response speed"
                         ))
         except Exception:
             pass
 
-        # Background automated scan
         if time.time() - last_scrape > scrape_interval:
             last_scrape = time.time()
             scrape_interval = random.randint(300, 420)
@@ -408,9 +409,10 @@ def main_loop(max_duration=19800):
                 new_items = scrape_discover_feed(domain, seen_posts)
                 if new_items:
                     log_event("AUTOSCAN", f"Found {len(new_items)} new releases automatically.")
-                    for t, l, tid in reversed(new_items[:10]):
+                    for t, l, tid in reversed(new_items[:8]):
                         details = extract_post_details(l, fallback_title=t)
-                        send_alert(ALLOWED_CHAT_ID, t, l, details)
+                        if details:
+                            send_alert(ALLOWED_CHAT_ID, t, l, details)
                         seen_posts.add(tid)
                     save_seen_posts(seen_posts)
             except Exception as e:
@@ -419,7 +421,7 @@ def main_loop(max_duration=19800):
         time.sleep(1)
 
     save_seen_posts(seen_posts)
-    log_event("CYCLE", "Worker cycle ended cleanly.")
+    log_event("CYCLE", "Worker cycle completed cleanly.")
 
 if __name__ == "__main__":
     main_loop()
