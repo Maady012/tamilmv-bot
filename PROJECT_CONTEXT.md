@@ -21,6 +21,10 @@
 ## 2. Scraping & Strict Original Post Logic
 - **Comment Bump & Reply Discarder:** 
   1TamilMV's `/discover/` stream mixes new topics with comment replies and thread bumps (`&do=findComment`, `comment=...`). The scraper discards all comment-related items, strictly isolating **genuine original post creations**.
+- **GDrive Post Filter:**
+  Topics that explicitly state `gdrive` in their title or URL are strictly excluded, as the bot is dedicated exclusively to torrent & TorBox-based releases.
+- **Torrent/Magnet Requirement:**
+  Only releases containing valid magnet links are broadcast. Posts without magnets are silently dropped to ensure 100% utility for TorBox.
 - **Chronological Topic ID Ordering:**
   Each release topic URL contains a unique numeric identifier (`/forums/topic/<topic_id>-<slug>/`).
   - Releases are sorted strictly in descending order of numeric Topic ID (`int(topic_id)`).

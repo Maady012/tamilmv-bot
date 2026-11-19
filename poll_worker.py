@@ -164,6 +164,10 @@ def extract_post_details(topic_url, fallback_title=""):
         if not title:
             title = fallback_title or slug_t or "1TamilMV Release"
 
+        # Explicit GDrive exclusion
+        if "gdrive" in f"{title} {clean_url}".lower():
+            return None
+
         # 2. Content & Magnets
         post_content = soup.find("div", {"data-role": "commentContent"}) or soup.find("div", class_="cPost_contentWrap")
         image_url, desc_lines = None, []
@@ -333,6 +337,12 @@ def scrape_discover_feed(domain, seen_posts):
                     title = slug_title if (slug_title and len(slug_title) > len(raw_title)) else raw_title
                     if not title or len(title) < 4:
                         title = slug_title or "1TamilMV Release"
+
+                    # Exclude topics that explicitly say 'gdrive' in title or url
+                    combined_check = f"{title} {clean_url}".lower()
+                    if "gdrive" in combined_check:
+                        continue
+
                     discovered_topics[tid] = (title, clean_url, tid)
     except Exception as e:
         log_event("ERROR", f"Discover feed error: {e}")
@@ -405,7 +415,7 @@ def main_loop(max_duration=19800):
                             send_msg(cid, f"🎉 Found <b>{len(items)}</b> genuine new release(s)!")
                             for t, l, tid in reversed(items[:8]):
                                 details = extract_post_details(l, fallback_title=t)
-                                if details:
+                                if details and details.get("magnets"):
                                     send_alert(cid, t, l, details)
                                 seen_posts.add(tid)
                             save_seen_posts(seen_posts)
@@ -428,22 +438,25 @@ def main_loop(max_duration=19800):
                         send_msg(cid, f"🏓 <b>Pong!</b> Responsive as of <i>{get_now_ist_str()}</i>.")
 
                     elif cmd == "/latest":
-                        send_msg(cid, "🔍 <i>Fetching the newest release on 1TamilMV...</i>")
+                        send_msg(cid, "🔍 <i>Fetching the newest torrent release on 1TamilMV...</i>")
                         try:
                             domain = get_active_domain()
                             all_topics = scrape_discover_feed(domain, set())
                             if not all_topics:
                                 send_msg(cid, "⚠️ Could not parse feed at this moment.")
                             else:
-                                latest_title, latest_link, latest_tid = all_topics[0]
-                                dt = extract_post_details(latest_link, fallback_title=latest_title)
-                                if dt:
-                                    send_alert(cid, latest_title, latest_link, dt)
-                                    seen_posts.add(latest_tid)
-                                    save_seen_posts(seen_posts)
-                                    log_event("LATEST", f"Dispatched release {latest_tid}: {latest_title[:50]}")
-                                else:
-                                    send_msg(cid, f"⚠️ Found newest topic <b>{html.escape(latest_title)}</b> but could not load details.")
+                                dispatched = False
+                                for t_title, t_link, t_tid in all_topics:
+                                    dt = extract_post_details(t_link, fallback_title=t_title)
+                                    if dt and dt.get("magnets"):
+                                        send_alert(cid, t_title, t_link, dt)
+                                        seen_posts.add(t_tid)
+                                        save_seen_posts(seen_posts)
+                                        log_event("LATEST", f"Dispatched release {t_tid}: {t_title[:50]}")
+                                        dispatched = True
+                                        break
+                                if not dispatched:
+                                    send_msg(cid, "ℹ️ No recent torrent-based releases found right now.")
                         except Exception as e:
                             send_msg(cid, f"⚠️ Error: {e}")
 
@@ -488,7 +501,7 @@ def main_loop(max_duration=19800):
                     log_event("AUTOSCAN", f"Found {len(new_items)} new releases automatically.")
                     for t, l, tid in reversed(new_items[:8]):
                         details = extract_post_details(l, fallback_title=t)
-                        if details:
+                        if details and details.get("magnets"):
                             send_alert(ALLOWED_CHAT_ID, t, l, details)
                         seen_posts.add(tid)
                     save_seen_posts(seen_posts)
