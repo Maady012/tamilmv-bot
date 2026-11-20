@@ -7,9 +7,10 @@ from typing import Dict, Any, List, Optional
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID", "643124604914630656")
 
-# Strict Tamil Sub-Category Channels under "🎬 1TAMILMV RADAR"
+# Channels under "🎬 1TAMILMV RADAR"
+# Master stream streams EVERYTHING. Sub-channels receive classified Tamil releases.
 CHANNELS = {
-    "all": "1573257878364753920",                     # #📢-all-releases
+    "all": "1573257878364753920",                     # #🎬-tamilmv-master (All 1TamilMV releases)
     "webhd": "1573261561324372119",                   # #🔥-tamil-web-hd-bluray
     "predvd": "1573261564755316836",                  # #⚡-tamil-predvd-dvdscr
     "hdrips": "1573261567682682980",                  # #📀-tamil-hd-rips
@@ -19,6 +20,7 @@ CHANNELS = {
 }
 
 COLORS = {
+    "master": 3447003,      # Dodger Blue
     "webhd": 15158332,      # Crimson Red
     "predvd": 15105570,     # Orange
     "hdrips": 15844367,     # Gold
@@ -27,62 +29,84 @@ COLORS = {
     "web_series": 9807270   # Cyan / Teal
 }
 
-def classify_release(title: str, breadcrumbs: List[str] = None) -> Optional[Dict[str, Any]]:
-    """
-    Classifies a release strictly into Tamil forum sub-categories:
-    1. PreDVD / DVDScr / CAM / TC
-    2. WEB-HD / iTunes-HD / BluRay
-    3. HD-Rips / DVD-Rips / BR-Rips
-    4. Hollywood Movies in Multi Audios
-    5. HDTV / SDTV / HDTV-Rips
-    6. WEB-SERIES / TV SHOWS
+def detect_language(text: str) -> str:
+    """Detects primary language/audio tags from title and forum breadcrumbs."""
+    t = text.lower()
+    if re.search(r"\b(tamil|kollywood)\b", t, re.I):
+        return "Tamil"
+    if re.search(r"\b(telugu|tollywood)\b", t, re.I):
+        return "Telugu"
+    if re.search(r"\b(hindi|bollywood)\b", t, re.I):
+        return "Hindi"
+    if re.search(r"\b(malayalam|mollywood)\b", t, re.I):
+        return "Malayalam"
+    if re.search(r"\b(kannada|sandalwood)\b", t, re.I):
+        return "Kannada"
+    if re.search(r"\b(english|hollywood)\b", t, re.I):
+        return "English"
+    return "Multi-Audio"
 
-    Excludes pure non-Tamil releases (Telugu, Hindi, Malayalam, Kannada, pure English).
+def classify_release(title: str, breadcrumbs: List[str] = None) -> Dict[str, Any]:
+    """
+    Classifies a release:
+    - Master Stream receives ALL releases (Tamil, Telugu, Hindi, Malayalam, Hollywood, etc.)
+    - Tamil / Hollywood Multi-Audio releases are routed to specific Tamil sub-category channels.
     """
     t_lower = title.lower()
     bc_text = " ".join(breadcrumbs or []).lower()
     combined = f"{t_lower} {bc_text}"
+
+    # Detected language
+    lang = detect_language(combined)
 
     # Check for Hollywood Movies in Multi Audios (Tamil multi audio)
     is_hollywood = bool(re.search(r"\b(hollywood|multi audio|multi-audio|multiaudio)\b", combined, re.I))
     
     # Check language: Must be Tamil or Hollywood Multi-Audio with Tamil
     is_tamil = bool(re.search(r"\b(tamil|kollywood)\b", combined, re.I))
-    
-    # If explicitly other languages and NOT Tamil / Multi-Audio, drop it
-    if not is_tamil and not is_hollywood:
-        if any(other in combined for other in ["malayalam", "telugu", "hindi", "kannada"]):
-            return None
 
-    # 1. WEB-SERIES / TV SHOWS
-    if bool(re.search(r"\b(season|s\d+|s0\d+|episode|ep\d+|web-series|series|tv show|tv shows|tv-shows)\b", combined, re.I)):
-        subtag = "WEB-SERIES / TV SHOWS"
-        channel_key = "web_series"
+    # Determine sub-category classification if it is Tamil or Hollywood multi-audio
+    channel_key = None
+    subtag = "General / Multi-Language Release"
 
-    # 2. Hollywood Movies in Multi Audios
-    elif is_hollywood and not bool(re.search(r"\bpredvd|dvdscr|cam\b", combined, re.I)):
-        subtag = "Hollywood Movies in Multi Audios"
-        channel_key = "hollywood"
+    if is_tamil or is_hollywood:
+        # 1. WEB-SERIES / TV SHOWS
+        if bool(re.search(r"\b(season|s\d+|s0\d+|episode|ep\d+|web-series|series|tv show|tv shows|tv-shows)\b", combined, re.I)):
+            subtag = "WEB-SERIES / TV SHOWS"
+            channel_key = "web_series"
 
-    # 3. HDTV / SDTV / HDTV-Rips
-    elif bool(re.search(r"\b(hdtv|sdtv|hdtv-rip|sdtv-rip|sun tv|vijay tv|zee tamil|kalaignar)\b", combined, re.I)):
-        subtag = "HDTV / SDTV / HDTV-Rips"
-        channel_key = "hdtv"
+        # 2. Hollywood Movies in Multi Audios
+        elif is_hollywood and not bool(re.search(r"\bpredvd|dvdscr|cam\b", combined, re.I)):
+            subtag = "Hollywood Movies in Multi Audios"
+            channel_key = "hollywood"
 
-    # 4. PreDVD / DVDScr / CAM / TC
-    elif bool(re.search(r"\b(predvd|dvdscr|cam|tc|line audio|hq line|theater print|cinema print)\b", combined, re.I)):
-        subtag = "PreDVD / DVDScr / CAM / TC"
-        channel_key = "predvd"
+        # 3. HDTV / SDTV / HDTV-Rips
+        elif bool(re.search(r"\b(hdtv|sdtv|hdtv-rip|sdtv-rip|sun tv|vijay tv|zee tamil|kalaignar)\b", combined, re.I)):
+            subtag = "HDTV / SDTV / HDTV-Rips"
+            channel_key = "hdtv"
 
-    # 5. HD-Rips / DVD-Rips / BR-Rips
-    elif bool(re.search(r"\b(hd-rip|hdrip|dvd-rip|dvdrip|br-rip|brrip|dvd9|dvd5)\b", combined, re.I)):
-        subtag = "HD-Rips / DVD-Rips / BR-Rips"
-        channel_key = "hdrips"
+        # 4. PreDVD / DVDScr / CAM / TC
+        elif bool(re.search(r"\b(predvd|dvdscr|cam|tc|line audio|hq line|theater print|cinema print)\b", combined, re.I)):
+            subtag = "PreDVD / DVDScr / CAM / TC"
+            channel_key = "predvd"
 
-    # 6. WEB-HD / iTunes-HD / BluRay (Modern Web & Master releases)
+        # 5. HD-Rips / DVD-Rips / BR-Rips
+        elif bool(re.search(r"\b(hd-rip|hdrip|dvd-rip|dvdrip|br-rip|brrip|dvd9|dvd5)\b", combined, re.I)):
+            subtag = "HD-Rips / DVD-Rips / BR-Rips"
+            channel_key = "hdrips"
+
+        # 6. WEB-HD / iTunes-HD / BluRay (Modern Web & Master releases)
+        else:
+            subtag = "WEB-HD / iTunes-HD / BluRay"
+            channel_key = "webhd"
     else:
-        subtag = "WEB-HD / iTunes-HD / BluRay"
-        channel_key = "webhd"
+        # Non-Tamil release: identify type for embed description
+        if bool(re.search(r"\b(season|s\d+|s0\d+|episode|ep\d+|web-series|series|tv show)\b", combined, re.I)):
+            subtag = f"{lang} Series / TV Show"
+        elif bool(re.search(r"\b(predvd|dvdscr|cam|tc)\b", combined, re.I)):
+            subtag = f"{lang} PreDVD / Cam"
+        else:
+            subtag = f"{lang} Movie Release"
 
     # Quality Specs
     qualities = []
@@ -112,16 +136,21 @@ def classify_release(title: str, breadcrumbs: List[str] = None) -> Optional[Dict
             size_badge = f"📦 MID-TIER ({max_s:.1f} GB)"
 
     return {
+        "language": lang,
         "subtag": subtag,
         "channel_key": channel_key,
-        "color": COLORS.get(channel_key, 15158332),
+        "color": COLORS.get(channel_key, COLORS["master"]),
         "quality": quality_str,
         "codec": codec_str,
         "size_badge": size_badge
     }
 
 def post_discord_release(title: str, link: str, details: Optional[Dict[str, Any]] = None):
-    """Dispatches a rich release embed to Discord with Dual-Routing (Master + Tamil Sub-Category)."""
+    """
+    Dispatches a rich release embed to Discord:
+    - Master Channel (#🎬-tamilmv-master) receives EVERY release.
+    - Classified Tamil releases also route to their respective Tamil category channel.
+    """
     if not DISCORD_BOT_TOKEN:
         return False
 
@@ -132,9 +161,6 @@ def post_discord_release(title: str, link: str, details: Optional[Dict[str, Any]
     breadcrumbs = details.get("breadcrumbs", []) if details else []
 
     info = classify_release(clean_t, breadcrumbs=breadcrumbs)
-    if not info:
-        # Excluded non-Tamil release
-        return False
 
     # Format available magnets
     mag_lines = []
@@ -144,7 +170,7 @@ def post_discord_release(title: str, link: str, details: Optional[Dict[str, Any]
     magnets_val = "\n".join(mag_lines) if mag_lines else "*Awaiting magnet links*"
 
     fields = [
-        {"name": "🗣️ Language", "value": "`Tamil`", "inline": True},
+        {"name": "🗣️ Language", "value": f"`{info['language']}`", "inline": True},
         {"name": "🏷️ Forum Section", "value": f"`{info['subtag']}`", "inline": True},
         {"name": "📺 Quality Specs", "value": f"`{info['quality']}`", "inline": True},
         {"name": "🔊 Codec & Audio", "value": f"`{info['codec']}`", "inline": True},
@@ -165,7 +191,7 @@ def post_discord_release(title: str, link: str, details: Optional[Dict[str, Any]
         "color": info["color"],
         "fields": fields,
         "footer": {
-            "text": "1TamilMV Radar • Tamil Official Sub-Categories Feed",
+            "text": "1TamilMV Radar • Official Discord Feed",
             "icon_url": "https://cdn.discordapp.com/emojis/1287993672817705001.png"
         }
     }
@@ -189,16 +215,17 @@ def post_discord_release(title: str, link: str, details: Optional[Dict[str, Any]
     ]
 
     payload = json.dumps({
-        "content": f"🎬 **NEW TAMIL RELEASE** — **{clean_t[:100]}**",
+        "content": f"🎬 **NEW RELEASE** — **{clean_t[:100]}**",
         "embeds": [embed],
         "components": components
     }).encode("utf-8")
 
-    # Dual-routing: #📢-all-releases + specific Tamil sub-category channel
+    # Target Channels: Master always receives it. Sub-category receives if Tamil/Hollywood match.
     target_channels = [CHANNELS["all"]]
-    cat_channel = CHANNELS.get(info["channel_key"])
-    if cat_channel and cat_channel != CHANNELS["all"]:
-        target_channels.append(cat_channel)
+    if info.get("channel_key"):
+        cat_channel = CHANNELS.get(info["channel_key"])
+        if cat_channel and cat_channel != CHANNELS["all"]:
+            target_channels.append(cat_channel)
 
     headers = {
         "Authorization": f"Bot {DISCORD_BOT_TOKEN}",
