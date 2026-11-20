@@ -61,3 +61,12 @@ The bot is a fully autonomous, cloud-hosted Telegram notifier monitoring 1TamilM
 2. **Fast 45–60 Second Scanning & Silent Heartbeats**:
    - Scans every 45–60 seconds and alerts within a minute of new uploads.
    - Chat notifications for empty scans removed; heartbeats are written to internal engine logs only (`/logs`).
+
+---
+
+### F. Cross-Topic Movie Title Deduplication
+1. **Multi-Thread / Multi-Topic Upload Suppression**:
+   - Uploaders frequently create separate forum topics for different qualities or audio tracks of the same movie (e.g. *Drones 1080p*, *Drones 720p*, *Drones Multi-Audio*), which bypassed numeric topic ID checks.
+   - Introduced `clean_movie_title(raw_title)` to extract canonical normalized movie keys (e.g. `drones_2026`).
+   - `scrape_discover_feed` checks `f"title:{m_key}" in seen_posts` and suppresses repeated threads for the same movie.
+   - Saves both numeric `tid` and `title:<movie_key>` to `seen_posts.json` upon alert dispatch.
