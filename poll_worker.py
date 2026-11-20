@@ -11,6 +11,7 @@ from datetime import datetime, timezone, timedelta
 import requests
 from curl_cffi import requests as cffi_requests
 from bs4 import BeautifulSoup
+from discord_dispatcher import post_discord_release
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -369,6 +370,12 @@ def send_alert(chat_id, title, link, details=None):
                 )
         except Exception as e:
             log_event("ERR", f"sendMessage exception: {e}")
+
+    # Dual Dispatch to Discord Server
+    try:
+        post_discord_release(title, clean_url, details=details)
+    except Exception as ed:
+        log_event("DISCORD_ERR", f"Discord post exception: {ed}")
 
 def send_msg(chat_id, text):
     try:

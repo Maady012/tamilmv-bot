@@ -70,3 +70,30 @@ The bot is a fully autonomous, cloud-hosted Telegram notifier monitoring 1TamilM
    - Introduced `clean_movie_title(raw_title)` to extract canonical normalized movie keys (e.g. `drones_2026`).
    - `scrape_discover_feed` checks `f"title:{m_key}" in seen_posts` and suppresses repeated threads for the same movie.
    - Saves both numeric `tid` and `title:<movie_key>` to `seen_posts.json` upon alert dispatch.
+
+---
+
+### G. Dual-Platform Discord Integration & AnkerGames Classification Architecture
+1. **Discord MovieBot Integration**:
+   - Added full Discord broadcasting alongside Telegram.
+   - Bot Token stored securely in GitHub Secrets (`DISCORD_BOT_TOKEN`).
+   - Server Guild ID: `643124604914630656` (`SK`).
+2. **Category & Channel Routing Layout**:
+   - Category: `🎬 1TAMILMV RADAR` (ID: `1573257812744732762`)
+   - Channels:
+     - `#📢-all-releases` (Master stream for every single release)
+     - `#🔥-tamil-movies` (Tamil movies, WEB-HD, BluRay)
+     - `#🌟-telugu-movies` (Telugu releases & dubbed)
+     - `#🎬-hindi-movies` (Hindi releases & Bollywood)
+     - `#🌴-malayalam-kannada` (Malayalam & Kannada releases)
+     - `#🍿-english-hollywood` (English & Hollywood Multi-Audio)
+     - `#📺-web-series` (Web series & TV shows)
+3. **Rich Discord Embed Cards**:
+   - Structured identically to the AnkerGames Radar cards:
+     - High-res movie poster thumbnail + full preview image.
+     - Rich metadata badges (`Language`, `Quality`, `Audio & Codec`, `Size Tier`, `DMCA Compliance`).
+     - Formatted available magnet options.
+     - Direct 1-tap `[🌐 View on 1TamilMV]` link button.
+4. **DMCA Safe & Zero Rate Limit Design**:
+   - No illegal payloads are hosted; embeds display public metadata, posters, and reference links with TorBox caching.
+   - Dual-posting executes safely with individual timeouts, ensuring Telegram notifications never wait or fail if Discord encounters network lag.
