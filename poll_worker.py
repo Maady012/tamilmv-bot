@@ -73,6 +73,7 @@ def get_active_domain():
     if CACHED_DOMAIN and (now - LAST_DOMAIN_CHECK < 1800):
         return CACHED_DOMAIN
 
+    # 1. First probe candidate domains list directly
     for base_url in CANDIDATE_DOMAINS:
         try:
             res = cffi_requests.get(base_url, impersonate="chrome120", timeout=8, headers=get_headers())
@@ -83,11 +84,30 @@ def get_active_domain():
                 return CACHED_DOMAIN
         except Exception:
             continue
-            
+
+    # 2. Dynamic Discovery Fallback: Fetch official Telegram channel preview for the latest active mirror
+    try:
+        t_res = cffi_requests.get("https://t.me/s/tmvog", impersonate="chrome120", timeout=8, headers=get_headers())
+        if t_res.status_code == 200:
+            found_domains = re.findall(r"https?://(?:www\.)?1tamilmv\.[a-z]{2,6}", t_res.text, re.IGNORECASE)
+            for d in reversed(found_domains):
+                clean_d = d.rstrip("/").lower()
+                try:
+                    probe = cffi_requests.get(clean_d, impersonate="chrome120", timeout=8, headers=get_headers())
+                    if probe.status_code == 200 and "tamilmv" in probe.text.lower():
+                        CACHED_DOMAIN = probe.url.rstrip("/")
+                        LAST_DOMAIN_CHECK = now
+                        log_event("DOMAIN", f"Dynamic Telegram mirror resolved: {CACHED_DOMAIN}")
+                        return CACHED_DOMAIN
+                except Exception:
+                    continue
+    except Exception as e:
+        log_event("WARN", f"Telegram dynamic mirror fallback error: {e}")
+
     # Auto-Health Notification if all mirrors fail
     log_event("HEALTH_ALERT", "All candidate mirrors failed responsiveness check")
     send_msg(ALLOWED_CHAT_ID, "⚠️ <b>Health Alert:</b> All candidate mirrors are currently unreachable. Waiting for active domain redirect...")
-    return CACHED_DOMAIN or "https://www.1tamilmv.io"
+    return CACHED_DOMAIN or "https://www.1tamilmv.ceo"
 
 def clean_movie_title(raw):
     if not raw:
@@ -197,6 +217,11 @@ def extract_post_details(topic_url, fallback_title=""):
         if "gdrive" in f"{title} {clean_url}".lower():
             return None
 
+        # 1b. Forum Breadcrumb Navigation (Exact Website Section)
+        breadcrumbs = [a.get_text(strip=True) for a in soup.select("nav.ipsBreadcrumb li a span") if a.get_text(strip=True)]
+        if not breadcrumbs:
+            breadcrumbs = [a.get_text(strip=True) for a in soup.select(".ipsBreadcrumb li a span") if a.get_text(strip=True)]
+
         # 2. Content & Magnets
         post_content = soup.find("div", {"data-role": "commentContent"}) or soup.find("div", class_="cPost_contentWrap")
         image_url, desc_lines = None, []
@@ -250,7 +275,8 @@ def extract_post_details(topic_url, fallback_title=""):
             "image": image_url,
             "summary": "\n".join(desc_lines[:3]),
             "magnets": magnets,
-            "is_ddl": has_ddl
+            "is_ddl": has_ddl,
+            "breadcrumbs": breadcrumbs
         }
     except Exception as e:
         log_event("EXTRACT_ERR", f"Error on {topic_url}: {e}")

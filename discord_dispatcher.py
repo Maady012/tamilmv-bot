@@ -129,8 +129,9 @@ def post_discord_release(title: str, link: str, details: Optional[Dict[str, Any]
     image_url = details.get("image") if details else None
     magnets = details.get("magnets", []) if details else []
     summary = details.get("summary", "") if details else ""
+    breadcrumbs = details.get("breadcrumbs", []) if details else []
 
-    info = classify_release(clean_t)
+    info = classify_release(clean_t, breadcrumbs=breadcrumbs)
     if not info:
         # Excluded non-Tamil release
         return False
