@@ -88,12 +88,25 @@ def get_active_domain():
     send_msg(ALLOWED_CHAT_ID, "⚠️ <b>Health Alert:</b> All candidate mirrors are currently unreachable. Waiting for active domain redirect...")
     return CACHED_DOMAIN or "https://www.1tamilmv.io"
 
+def clean_movie_title(raw):
+    if not raw:
+        return ""
+    c = raw.lower()
+    c = re.sub(r"www\.1tamilmv\.\w+\s*-\s*", "", c)
+    y = re.search(r"\b(19\d\d|20\d\d)\b", c)
+    year = y.group(1) if y else ""
+    c = re.sub(r"\[.*?\]", " ", c)
+    c = re.sub(r"\(.*?\)", " ", c)
+    c = re.sub(r"\b(?:4k|2160p|1080p|720p|480p|hdrip|bluray|web-dl|webrip|hevc|avc|x264|x265|dd\+|ddp|truehd|true|untouched|hq|esub|sample|line|predvd|dvdrip|tamil|telugu|hindi|malayalam|kannada|english)\b.*", " ", c)
+    c = re.sub(r"[^a-z0-9]", "", c)
+    return f"{c}_{year}" if year else c
+
 def load_seen_posts():
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, "r") as f:
                 data = json.load(f)
-                return set(str(x) for x in data if str(x).isdigit())
+                return set(str(x) for x in data if x)
         except Exception:
             return set()
     return set()
@@ -101,7 +114,10 @@ def load_seen_posts():
 GH_PAT = os.getenv("GH_PAT")
 
 def save_seen_posts(seen_set):
-    trimmed = sorted(list(str(x) for x in seen_set if str(x).isdigit()), key=lambda x: int(x))[-1000:]
+    # Sort numeric topic IDs by integer value, and keep title hashes alphabetically
+    numeric_ids = sorted([str(x) for x in seen_set if str(x).isdigit()], key=lambda x: int(x))[-1000:]
+    title_keys = sorted([str(x) for x in seen_set if not str(x).isdigit()])[-500:]
+    trimmed = numeric_ids + title_keys
     with open(STATE_FILE, "w") as f:
         json.dump(trimmed, f, indent=2)
     # Persist to GitHub repo immediately using authenticated PAT so restarts never re-alert
@@ -415,6 +431,13 @@ def scrape_discover_feed(domain, seen_posts):
                     if "gdrive" in combined_check:
                         continue
 
+                    # Filter by normalized movie title key (e.g. drones_2026) to prevent
+                    # alerting multiple topics created for the same movie
+                    m_key = clean_movie_title(title)
+                    if m_key and f"title:{m_key}" in seen_posts:
+                        log_event("DEDUP_TITLE", f"Topic {tid} skipped as duplicate of title:{m_key}")
+                        continue
+
                     discovered_topics[tid] = (title, clean_url, tid)
     except Exception as e:
         log_event("ERROR", f"Discover feed error: {e}")
@@ -505,8 +528,12 @@ def main_loop(max_duration=19800):
                             for t, l, tid in reversed(items[:8]):
                                 details = extract_post_details(l, fallback_title=t)
                                 if details and details.get("magnets"):
+                                    d_title = details.get("title") or t
+                                    m_k = clean_movie_title(d_title)
                                     send_alert(cid, t, l, details)
                                     seen_posts.add(tid)
+                                    if m_k:
+                                        seen_posts.add(f"title:{m_k}")
                                     new_alerts += 1
                                 elif details and details.get("is_ddl"):
                                     seen_posts.add(tid)
@@ -552,8 +579,12 @@ def main_loop(max_duration=19800):
                                     for t_title, t_link, t_tid in unseen_topics[:10]:
                                         dt = extract_post_details(t_link, fallback_title=t_title)
                                         if dt and dt.get("magnets"):
+                                            d_title = dt.get("title") or t_title
+                                            m_k = clean_movie_title(d_title)
                                             send_alert(cid, t_title, t_link, dt)
                                             seen_posts.add(t_tid)
+                                            if m_k:
+                                                seen_posts.add(f"title:{m_k}")
                                             save_seen_posts(seen_posts)
                                             log_event("LATEST", f"Dispatched release {t_tid}: {t_title[:50]}")
                                             dispatched = True
@@ -620,8 +651,12 @@ def main_loop(max_duration=19800):
                     for t, l, tid in reversed(new_items[:8]):
                         details = extract_post_details(l, fallback_title=t)
                         if details and details.get("magnets"):
+                            d_title = details.get("title") or t
+                            m_k = clean_movie_title(d_title)
                             send_alert(ALLOWED_CHAT_ID, t, l, details)
                             seen_posts.add(tid)
+                            if m_k:
+                                seen_posts.add(f"title:{m_k}")
                             new_alerts += 1
                         elif details and details.get("is_ddl"):
                             seen_posts.add(tid)
