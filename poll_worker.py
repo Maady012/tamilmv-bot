@@ -420,10 +420,63 @@ def send_msg(chat_id, text):
     except Exception as e:
         log_event("ERR", f"send_msg exception: {e}")
 
-def scrape_discover_feed(domain, seen_posts):
+def scrape_homepage_and_discover(domain, seen_posts):
+    """
+    1st Priority: Scrapes the 1TamilMV Homepage (Top Featured & Newest Release Headings).
+    2nd Priority: Scrapes the Discover Feed (/discover/) for fast incremental updates.
+    Returns prioritized list sorted by newest topic ID.
+    """
     discovered_topics = {}
-    discover_url = f"{domain}/index.php?/discover/"
+
+    def extract_and_add(a_tag, default_title=""):
+        if not a_tag or not a_tag.get("href"):
+            return
+        href = a_tag["href"].strip()
+        href = href.split("&do=findComment")[0].split("?do=findComment")[0].split("#")[0]
+        m = re.search(r"/topic/(\d+)-", href)
+        if not m:
+            return
+        tid_int = int(m.group(1))
+        if tid_int < 10000:
+            return
+        tid = str(tid_int)
+        if tid in seen_posts or tid in discovered_topics:
+            return
+
+        clean_url = clean_topic_url(href, domain)
+        raw_title = a_tag.get_text(strip=True) or default_title
+        slug_title = extract_title_from_slug(clean_url)
+        title = slug_title if (slug_title and len(slug_title) > len(raw_title)) else raw_title
+        if not title or len(title) < 4:
+            title = slug_title or "1TamilMV Release"
+
+        # Exclude gdrive
+        if "gdrive" in f"{title} {clean_url}".lower():
+            return
+
+        # Deduplication check by movie title key
+        m_key = clean_movie_title(title)
+        if m_key and f"title:{m_key}" in seen_posts:
+            log_event("DEDUP_TITLE", f"Topic {tid} skipped as duplicate of title:{m_key}")
+            return
+
+        discovered_topics[tid] = (title, clean_url, tid)
+
+    # 1. 1ST PRIORITY: Scrape the Homepage directly
     try:
+        home_res = cffi_requests.get(domain, impersonate="chrome120", timeout=12, headers=get_headers())
+        if home_res.status_code == 200:
+            soup = BeautifulSoup(home_res.text, "html.parser")
+            for a in soup.find_all("a", href=True):
+                if "/topic/" in a.get("href", ""):
+                    extract_and_add(a)
+            log_event("HOMEPAGE_SCAN", f"Homepage scan yielded {len(discovered_topics)} candidate topics.")
+    except Exception as eh:
+        log_event("WARN", f"Homepage priority scan error: {eh}")
+
+    # 2. 2ND PRIORITY: Scrape Discover Stream Feed for incremental topics
+    try:
+        discover_url = f"{domain}/index.php?/discover/"
         r = cffi_requests.get(discover_url, impersonate="chrome120", timeout=15, headers=get_headers())
         if r.status_code == 200:
             soup = BeautifulSoup(r.text, "html.parser")
@@ -433,47 +486,9 @@ def scrape_discover_feed(domain, seen_posts):
                 if not title_el:
                     continue
                 a_tag = title_el.find("a") if title_el.name != "a" else title_el
-                if not a_tag or not a_tag.get("href"):
-                    continue
-                
-                href = a_tag["href"].strip()
-                # Clean comment parameters to obtain canonical topic URL
-                href = href.split("&do=findComment")[0].split("?do=findComment")[0].split("#")[0]
-
-                m = re.search(r"/topic/(\d+)-", href)
-                if not m:
-                    continue
-                tid_int = int(m.group(1))
-                # Strictly filter out comment bumps on old movies: only modern topics (>= 200000)
-                if tid_int < 10000:
-                    continue
-                tid = str(tid_int)
-                if tid in seen_posts:
-                    continue
-
-                if tid not in discovered_topics:
-                    clean_url = clean_topic_url(href, domain)
-                    raw_title = a_tag.get_text(strip=True)
-                    slug_title = extract_title_from_slug(clean_url)
-                    title = slug_title if (slug_title and len(slug_title) > len(raw_title)) else raw_title
-                    if not title or len(title) < 4:
-                        title = slug_title or "1TamilMV Release"
-
-                    # Exclude topics that explicitly say 'gdrive' in title or url
-                    combined_check = f"{title} {clean_url}".lower()
-                    if "gdrive" in combined_check:
-                        continue
-
-                    # Filter by normalized movie title key (e.g. drones_2026) to prevent
-                    # alerting multiple topics created for the same movie
-                    m_key = clean_movie_title(title)
-                    if m_key and f"title:{m_key}" in seen_posts:
-                        log_event("DEDUP_TITLE", f"Topic {tid} skipped as duplicate of title:{m_key}")
-                        continue
-
-                    discovered_topics[tid] = (title, clean_url, tid)
-    except Exception as e:
-        log_event("ERROR", f"Discover feed error: {e}")
+                extract_and_add(a_tag)
+    except Exception as ed:
+        log_event("ERROR", f"Discover feed error: {ed}")
 
     # Descending numeric Topic ID ensures newest releases first
     return sorted(discovered_topics.values(), key=lambda x: int(x[2]), reverse=True)
@@ -551,9 +566,9 @@ def main_loop(max_duration=19800):
                     log_event("COMMAND", f"Processing '{cmd}' from {cid}")
 
                     if cmd in ["/check", "/scan"]:
-                        send_msg(cid, "🔍 <i>Checking for newly created releases...</i>")
+                        send_msg(cid, "🔍 <i>Checking homepage & latest releases...</i>")
                         domain = get_active_domain()
-                        items = scrape_discover_feed(domain, seen_posts)
+                        items = scrape_homepage_and_discover(domain, seen_posts)
                         if not items:
                             send_msg(cid, "✅ <b>Up to date!</b> No new releases found since last scan.")
                         else:
@@ -599,7 +614,7 @@ def main_loop(max_duration=19800):
                         send_msg(cid, "🔍 <i>Fetching the newest torrent release on 1TamilMV...</i>")
                         try:
                             domain = get_active_domain()
-                            raw_topics = scrape_discover_feed(domain, set())
+                            raw_topics = scrape_homepage_and_discover(domain, set())
                             if not raw_topics:
                                 send_msg(cid, "⚠️ 1TamilMV feed is currently updating or unreachable. Please try again shortly.")
                             else:
@@ -677,7 +692,7 @@ def main_loop(max_duration=19800):
             scrape_interval = random.randint(45, 60)
             try:
                 domain = get_active_domain()
-                new_items = scrape_discover_feed(domain, seen_posts)
+                new_items = scrape_homepage_and_discover(domain, seen_posts)
                 if new_items:
                     log_event("AUTOSCAN", f"Found {len(new_items)} new candidate releases.")
                     new_alerts = 0
