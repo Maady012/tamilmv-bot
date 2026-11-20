@@ -437,7 +437,9 @@ def scrape_homepage_and_discover(domain, seen_posts):
         if not m:
             return
         tid_int = int(m.group(1))
-        if tid_int < 10000:
+        # Strictly only process modern, brand-new releases (Topics >= 201170)
+        # Prevents historical forum links or footer/archive links from being re-alerted
+        if tid_int < 201170:
             return
         tid = str(tid_int)
         if tid in seen_posts or tid in discovered_topics:
