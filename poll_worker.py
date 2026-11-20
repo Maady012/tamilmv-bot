@@ -98,15 +98,19 @@ def load_seen_posts():
             return set()
     return set()
 
+GH_PAT = os.getenv("GH_PAT")
+
 def save_seen_posts(seen_set):
     trimmed = sorted(list(str(x) for x in seen_set if str(x).isdigit()), key=lambda x: int(x))[-1000:]
     with open(STATE_FILE, "w") as f:
         json.dump(trimmed, f, indent=2)
-    # Also persist to git immediately so state is never lost across workflow restarts
+    # Persist to GitHub repo immediately using authenticated PAT so restarts never re-alert
     try:
-        os.system("git add seen_posts.json && git diff --staged --quiet || (git commit -m 'chore: persist seen_posts' && git push origin main >/dev/null 2>&1 &)")
-    except Exception:
-        pass
+        remote_url = f"https://x-access-token:{GH_PAT}@github.com/Maady012/tamilmv-bot.git" if GH_PAT else "origin"
+        cmd = f"git config --global user.name \"github-actions[bot]\" && git config --global user.email \"github-actions[bot]@users.noreply.github.com\" && git add seen_posts.json && git diff --staged --quiet || (git commit -m \"chore: persist seen_posts\" && git push {remote_url} main >/dev/null 2>&1)"
+        os.system(cmd)
+    except Exception as e:
+        log_event("WARN", f"Git persist exception: {e}")
 
 def clean_topic_url(raw_url, domain):
     if raw_url.startswith("/"):
