@@ -97,3 +97,17 @@ The bot is a fully autonomous, cloud-hosted Telegram notifier monitoring 1TamilM
 4. **DMCA Safe & Zero Rate Limit Design**:
    - No illegal payloads are hosted; embeds display public metadata, posters, and reference links with TorBox caching.
    - Dual-posting executes safely with individual timeouts, ensuring Telegram notifications never wait or fail if Discord encounters network lag.
+
+---
+
+## Update: 2026-11-21 - Safe Auto-Add to TorBox Cloud (Highest Available Quality)
+1. **Automated Cloud Library Ingestion**:
+   - The bot automatically queues newly discovered releases directly into TorBox without requiring manual button taps.
+   - Implements **Highest Available Quality** resolution ranking (`2160p / 4K` ➔ `1080p FHD` ➔ `720p HD`), prioritizing HEVC/10bit and BluRay/WEB-DL encodes.
+2. **Safety & Rate Limit Guards**:
+   - Strict BitTorrent infohash tracking (`tb_hash:<hash>`) ensures that no magnet is ever pushed more than once.
+   - Throttled API dispatch (1.2s delay between additions) protects against TorBox API rate limiting during batch release drops.
+3. **Telegram Interactive Commands & Feedback**:
+   - New command `/autotorbox` (supports `/autotorbox on`, `/autotorbox off`, and `/autotorbox status`).
+   - Post alert cards display: `⚡ TorBox Cloud: ✅ Auto-Queued (<Quality>)`.
+   - Inline button updates dynamically to `[⚡ Queued ✅]` for the selected tier while keeping alternate options clickable.

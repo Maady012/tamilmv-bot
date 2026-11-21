@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ALLOWED_CHAT_ID = str(os.getenv("TELEGRAM_CHAT_ID", "565062030")).strip()
-TORBOX_API_KEY = os.getenv("TORBOX_API_KEY", "").strip()
+TORBOX_API_KEY = os.getenv("TORBOX_API_KEY", "0e4230fc-d5dc-4cc5-8aae-4c03bba5b48c").strip()
 STATE_FILE = "seen_posts.json"
 DEBUG_LOG_FILE = "bot_activity.log"
 
@@ -135,10 +135,11 @@ def load_seen_posts():
 GH_PAT = os.getenv("GH_PAT")
 
 def save_seen_posts(seen_set):
-    # Sort numeric topic IDs by integer value, and keep title hashes alphabetically
+    # Sort numeric topic IDs by integer value, keep configs permanently, and keep recent hashes
     numeric_ids = sorted([str(x) for x in seen_set if str(x).isdigit()], key=lambda x: int(x))[-1000:]
-    title_keys = sorted([str(x) for x in seen_set if not str(x).isdigit()])[-500:]
-    trimmed = numeric_ids + title_keys
+    config_keys = [str(x) for x in seen_set if str(x).startswith("config:")]
+    other_keys = sorted([str(x) for x in seen_set if not str(x).isdigit() and not str(x).startswith("config:")])[-1000:]
+    trimmed = numeric_ids + config_keys + other_keys
     with open(STATE_FILE, "w") as f:
         json.dump(trimmed, f, indent=2)
     # Persist to GitHub repo immediately using authenticated PAT so restarts never re-alert
@@ -282,6 +283,80 @@ def extract_post_details(topic_url, fallback_title=""):
         log_event("EXTRACT_ERR", f"Error on {topic_url}: {e}")
         return None
 
+def get_magnet_quality_score(magnet):
+    label = (magnet.get("label") or "").lower()
+    url = (magnet.get("url") or "").lower()
+    text = f"{label} {url}"
+    
+    score = 0
+    # Resolution tier (Highest resolution gets highest priority)
+    if any(q in text for q in ["2160p", "4k", "uhd"]):
+        score += 4000
+    elif any(q in text for q in ["1080p", "fhd"]):
+        score += 3000
+    elif any(q in text for q in ["720p", "hd"]):
+        score += 2000
+    elif any(q in text for q in ["480p", "540p", "dvd", "dvdrip"]):
+        score += 1000
+    elif "predvd" in text or "dvdscr" in text:
+        score += 500
+
+    # Source bonus
+    if "remux" in text or "bluray" in text or "bdrip" in text:
+        score += 300
+    elif "web-dl" in text or "webrip" in text or "webhd" in text:
+        score += 200
+    elif "hdtv" in text or "hdrip" in text:
+        score += 100
+        
+    # Codec efficiency bonus (x265/HEVC gets slight bonus if resolution is identical)
+    if "x265" in text or "hevc" in text or "10bit" in text:
+        score += 50
+
+    return score
+
+def pick_highest_quality_magnet(magnets):
+    if not magnets:
+        return None
+    # Python max with key preserves first item in case of tie
+    return max(magnets, key=lambda m: get_magnet_quality_score(m))
+
+def is_auto_torbox_enabled(seen_posts):
+    return "config:autotorbox:disabled" not in seen_posts
+
+def auto_add_highest_to_torbox(details, seen_posts):
+    """
+    Safely selects and pushes the highest-quality magnet to TorBox cloud.
+    Guarded by hash de-duplication so no torrent is queued twice.
+    """
+    if not details or not details.get("magnets"):
+        return False, "No magnets found", None
+        
+    if not is_auto_torbox_enabled(seen_posts):
+        return False, "Auto-TorBox disabled", None
+        
+    magnets = details.get("magnets", [])
+    best_mag = pick_highest_quality_magnet(magnets)
+    if not best_mag or not best_mag.get("url"):
+        return False, "No valid magnet found", None
+        
+    mag_url = best_mag["url"]
+    hash_match = re.search(r"urn:btih:([a-zA-Z0-9]+)", mag_url)
+    bt_hash = hash_match.group(1).lower() if hash_match else None
+    
+    if bt_hash and f"tb_hash:{bt_hash}" in seen_posts:
+        return True, f"Already queued in TorBox ({best_mag.get('label', 'Best')})", best_mag
+        
+    success, msg = add_to_torbox(mag_url)
+    if success:
+        if bt_hash:
+            seen_posts.add(f"tb_hash:{bt_hash}")
+        log_event("AUTO_TORBOX", f"Auto-added [{best_mag.get('label')}]: {details.get('title', '')[:50]}")
+        return True, f"Auto-Queued [{best_mag.get('label', 'Highest Quality')}]", best_mag
+    else:
+        log_event("AUTO_TORBOX_ERR", f"Failed for [{best_mag.get('label')}]: {msg}")
+        return False, f"Failed: {msg}", best_mag
+
 def add_to_torbox(magnet_url):
     """Adds a magnet directly to your TorBox cloud."""
     if not TORBOX_API_KEY:
@@ -298,7 +373,7 @@ def add_to_torbox(magnet_url):
     except Exception as e:
         return False, str(e)
 
-def send_alert(chat_id, title, link, details=None):
+def send_alert(chat_id, title, link, details=None, auto_tb_info=None):
     if not BOT_TOKEN or not chat_id:
         return
     d_title = html.escape((details.get("title") if details and details.get("title") else title).strip())
@@ -317,6 +392,12 @@ def send_alert(chat_id, title, link, details=None):
         sum_brief = "\n".join(summary.splitlines()[:2])
         caption += f"📋 <b>Release Info:</b>\n<i>{sum_brief[:250]}</i>\n\n"
 
+    if auto_tb_info:
+        if auto_tb_info.get("success"):
+            caption += f"⚡ <b>TorBox Cloud:</b> ✅ Auto-Queued (<code>{html.escape(auto_tb_info.get('label', 'Highest Quality')[:25])}</code>)\n\n"
+        elif auto_tb_info.get("error"):
+            caption += f"⚡ <b>TorBox Cloud:</b> ⚠️ <i>{html.escape(auto_tb_info.get('error')[:45])}</i>\n\n"
+
     # Build Interactive Buttons: 1-Tap Copy & 1-Tap TorBox Cloud Push
     inline_keyboard = []
     if magnets:
@@ -329,9 +410,13 @@ def send_alert(chat_id, title, link, details=None):
             mag_key = f"gm_{int(time.time())}_{idx}_{random.randint(100, 999)}"
             CALLBACK_CACHE[tb_key] = ("torbox", m["url"], safe_label)
             CALLBACK_CACHE[mag_key] = ("magnet", m["url"], safe_label)
+
+            is_queued = auto_tb_info and auto_tb_info.get("success") and auto_tb_info.get("url") == m["url"]
+            tb_btn_label = "⚡ Queued ✅" if is_queued else "⚡ TorBox"
+
             inline_keyboard.append([
                 {"text": f"🧲 Copy {safe_label[:14]}", "callback_data": mag_key},
-                {"text": f"⚡ TorBox", "callback_data": tb_key}
+                {"text": tb_btn_label, "callback_data": tb_key}
             ])
         caption += "\n<i>(Tap button below to get copyable magnet or push to cloud)</i>\n"
     else:
@@ -419,6 +504,29 @@ def send_msg(chat_id, text):
             )
     except Exception as e:
         log_event("ERR", f"send_msg exception: {e}")
+
+def process_and_dispatch_release(chat_id, raw_title, link, details, seen_posts):
+    """
+    Dispatches release alert to Telegram & Discord, with auto-TorBox push for highest quality.
+    """
+    d_title = details.get("title") or raw_title
+    m_k = clean_movie_title(d_title)
+    
+    auto_tb_info = None
+    if is_auto_torbox_enabled(seen_posts):
+        time.sleep(1.2)  # Gentle delay to safeguard TorBox rate-limits across batch releases
+        success, tb_msg, best_mag = auto_add_highest_to_torbox(details, seen_posts)
+        if best_mag:
+            auto_tb_info = {
+                "success": success,
+                "label": best_mag.get("label", "Highest Quality"),
+                "url": best_mag.get("url", ""),
+                "error": tb_msg if not success else ""
+            }
+
+    send_alert(chat_id, raw_title, link, details, auto_tb_info=auto_tb_info)
+    if m_k:
+        seen_posts.add(f"title:{m_k}")
 
 def scrape_homepage_and_discover(domain, seen_posts):
     """
@@ -578,12 +686,8 @@ def main_loop(max_duration=19800):
                             for t, l, tid in reversed(items[:8]):
                                 details = extract_post_details(l, fallback_title=t)
                                 if details and details.get("magnets"):
-                                    d_title = details.get("title") or t
-                                    m_k = clean_movie_title(d_title)
-                                    send_alert(cid, t, l, details)
+                                    process_and_dispatch_release(cid, t, l, details, seen_posts)
                                     seen_posts.add(tid)
-                                    if m_k:
-                                        seen_posts.add(f"title:{m_k}")
                                     new_alerts += 1
                                 elif details and details.get("is_ddl"):
                                     seen_posts.add(tid)
@@ -595,7 +699,40 @@ def main_loop(max_duration=19800):
                             else:
                                 send_msg(cid, "ℹ️ New posts found, but awaiting magnet link upload by uploader.")
 
+                    elif cmd == "/autotorbox":
+                        parts = text.split()
+                        subcmd = parts[1].lower() if len(parts) > 1 else "status"
+                        if subcmd == "on":
+                            seen_posts.discard("config:autotorbox:disabled")
+                            seen_posts.add("config:autotorbox:enabled")
+                            save_seen_posts(seen_posts)
+                            send_msg(cid, "✅ <b>Auto-TorBox is now ENABLED!</b>\n\nThe bot will automatically queue the <b>highest available quality</b> magnet (4K / 1080p priority) to your TorBox cloud for every new release.")
+                        elif subcmd == "off":
+                            seen_posts.add("config:autotorbox:disabled")
+                            seen_posts.discard("config:autotorbox:enabled")
+                            save_seen_posts(seen_posts)
+                            send_msg(cid, "⏸ <b>Auto-TorBox is now DISABLED.</b>\n\nNew releases will only be sent to chat. Magnets will only be added to TorBox when you tap the <b>[⚡ TorBox]</b> button.")
+                        else:
+                            is_en = "config:autotorbox:disabled" not in seen_posts
+                            st_icon = "🟢 ACTIVE (Highest Quality Auto-Push)" if is_en else "🔴 PAUSED"
+                            tb_count = len([x for x in seen_posts if str(x).startswith("tb_hash:")])
+                            msg = (
+                                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                                "⚡ <b>Auto-TorBox Cloud Settings</b>\n"
+                                "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                                f"• <b>Status:</b> {st_icon}\n"
+                                f"• <b>Quality Priority:</b> 2160p/4K ➔ 1080p ➔ 720p\n"
+                                f"• <b>Hash De-duplication:</b> Active\n"
+                                f"• <b>Tracked in TorBox:</b> {tb_count} releases\n\n"
+                                "<b>Toggle Commands:</b>\n"
+                                "👉 <code>/autotorbox on</code> - Enable automatic cloud push\n"
+                                "👉 <code>/autotorbox off</code> - Disable automatic cloud push"
+                            )
+                            send_msg(cid, msg)
+
                     elif cmd == "/status":
+                        is_tb_auto = "🟢 ACTIVE (Highest Quality)" if "config:autotorbox:disabled" not in seen_posts else "🔴 PAUSED"
+                        tb_queued_count = len([x for x in seen_posts if str(x).startswith("tb_hash:")])
                         send_msg(cid, (
                             "━━━━━━━━━━━━━━━━━━━━━━\n"
                             "🛡 <b>1TamilMV Live Status</b>\n"
@@ -603,7 +740,8 @@ def main_loop(max_duration=19800):
                             f"👤 <b>Access:</b> Locked to ID <code>{ALLOWED_CHAT_ID}</code>\n"
                             f"🌐 <b>Active Mirror:</b> {domain}\n"
                             f"📁 <b>Tracked Topics:</b> <b>{len(seen_posts)}</b> releases\n"
-                            f"⚡ <b>TorBox Integration:</b> Active (Instant Cloud Push)\n"
+                            f"⚡ <b>Auto-TorBox:</b> {is_tb_auto}\n"
+                            f"📦 <b>TorBox Library Queued:</b> {tb_queued_count} items\n"
                             f"🛡 <b>Duplicate Guard:</b> Strict Topic ID Filtering\n"
                             f"🕒 <b>Server Time:</b> <i>{get_now_ist_str()}</i>\n"
                             f"⚡ <b>Latency:</b> Instant (&lt; 1s)"
@@ -629,12 +767,8 @@ def main_loop(max_duration=19800):
                                     for t_title, t_link, t_tid in unseen_topics[:10]:
                                         dt = extract_post_details(t_link, fallback_title=t_title)
                                         if dt and dt.get("magnets"):
-                                            d_title = dt.get("title") or t_title
-                                            m_k = clean_movie_title(d_title)
-                                            send_alert(cid, t_title, t_link, dt)
+                                            process_and_dispatch_release(cid, t_title, t_link, dt, seen_posts)
                                             seen_posts.add(t_tid)
-                                            if m_k:
-                                                seen_posts.add(f"title:{m_k}")
                                             save_seen_posts(seen_posts)
                                             log_event("LATEST", f"Dispatched release {t_tid}: {t_title[:50]}")
                                             dispatched = True
@@ -681,7 +815,8 @@ def main_loop(max_duration=19800):
                             "🤖 <b>1TamilMV Notifier Commands</b>\n"
                             "━━━━━━━━━━━━━━━━━━━━━━\n\n"
                             "👉 <b>/check</b> - Scan for new releases now\n"
-                            "👉 <b>/latest</b> - Preview the newest release\n"
+                            "👉 <b>/latest</b> - Preview newest release & auto-queue\n"
+                            "👉 <b>/autotorbox [on|off|status]</b> - Manage auto cloud push\n"
                             "👉 <b>/status</b> - System health & TorBox status\n"
                             "👉 <b>/logs</b> - View recent event logs\n"
                             "👉 <b>/ping</b> - Test response speed"
@@ -701,12 +836,8 @@ def main_loop(max_duration=19800):
                     for t, l, tid in reversed(new_items[:8]):
                         details = extract_post_details(l, fallback_title=t)
                         if details and details.get("magnets"):
-                            d_title = details.get("title") or t
-                            m_k = clean_movie_title(d_title)
-                            send_alert(ALLOWED_CHAT_ID, t, l, details)
+                            process_and_dispatch_release(ALLOWED_CHAT_ID, t, l, details, seen_posts)
                             seen_posts.add(tid)
-                            if m_k:
-                                seen_posts.add(f"title:{m_k}")
                             new_alerts += 1
                         elif details and details.get("is_ddl"):
                             seen_posts.add(tid)
