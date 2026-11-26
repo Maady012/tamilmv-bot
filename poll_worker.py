@@ -322,7 +322,8 @@ def pick_highest_quality_magnet(magnets):
     return max(magnets, key=lambda m: get_magnet_quality_score(m))
 
 def is_auto_torbox_enabled(seen_posts):
-    return "config:autotorbox:disabled" not in seen_posts
+    # Auto-TorBox is disabled by default to prevent TorBox copyright strikes
+    return "config:autotorbox:enabled" in seen_posts and "config:autotorbox:disabled" not in seen_posts
 
 def auto_add_highest_to_torbox(details, seen_posts):
     """
@@ -713,7 +714,7 @@ def main_loop(max_duration=19800):
                             save_seen_posts(seen_posts)
                             send_msg(cid, "⏸ <b>Auto-TorBox is now DISABLED.</b>\n\nNew releases will only be sent to chat. Magnets will only be added to TorBox when you tap the <b>[⚡ TorBox]</b> button.")
                         else:
-                            is_en = "config:autotorbox:disabled" not in seen_posts
+                            is_en = is_auto_torbox_enabled(seen_posts)
                             st_icon = "🟢 ACTIVE (Highest Quality Auto-Push)" if is_en else "🔴 PAUSED"
                             tb_count = len([x for x in seen_posts if str(x).startswith("tb_hash:")])
                             msg = (
@@ -731,7 +732,7 @@ def main_loop(max_duration=19800):
                             send_msg(cid, msg)
 
                     elif cmd == "/status":
-                        is_tb_auto = "🟢 ACTIVE (Highest Quality)" if "config:autotorbox:disabled" not in seen_posts else "🔴 PAUSED"
+                        is_tb_auto = "🟢 ACTIVE (Highest Quality)" if is_auto_torbox_enabled(seen_posts) else "🔴 PAUSED"
                         tb_queued_count = len([x for x in seen_posts if str(x).startswith("tb_hash:")])
                         send_msg(cid, (
                             "━━━━━━━━━━━━━━━━━━━━━━\n"
